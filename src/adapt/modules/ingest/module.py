@@ -353,7 +353,6 @@ import xarray as _xr  # noqa: E402
 from adapt.contracts import assert_gridded  # noqa: E402
 from adapt.execution.module_registry import registry  # noqa: E402
 from adapt.modules.base import BaseModule  # noqa: E402
-from adapt.utils.paths import get_netcdf_path  # noqa: E402
 
 
 def _check_grid_ds_2d(ds):
@@ -411,7 +410,9 @@ class LoadModule(BaseModule):
         except Exception:
             pass
 
-        nc_path = get_netcdf_path(output_dirs, radar, nc_filename, scan_time=scan_time)
+        date_str = scan_time.strftime("%Y%m%d")
+        base = output_dirs.get("base")
+        nc_path = base / radar / "gridnc" / date_str / nc_filename if base else None
         output_dir = str(nc_path.parent) if nc_path else None
 
         ds = self._loader.load_and_regrid(

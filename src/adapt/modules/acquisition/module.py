@@ -15,8 +15,6 @@ from pathlib import Path
 
 from nexradaws import NexradAwsInterface
 
-from adapt.utils.paths import get_nexrad_path
-
 __all__ = ['AwsNexradDownloader']
 
 logger = logging.getLogger(__name__)
@@ -506,20 +504,14 @@ class AwsNexradDownloader(threading.Thread):
         return new_downloads
 
     def _get_local_path(self, scan) -> Path:
-        """Get local path for scan using new structure: base/RADAR_ID/nexrad/YYYYMMDD/filename."""
+        """Get local path for scan: base/RADAR_ID/nexrad/YYYYMMDD/filename."""
         filename = Path(scan.key).name
-
-        # Use new path function if output_dirs available
-        if self.output_dirs:
-            return get_nexrad_path(
-                self.output_dirs,
-                self.radar,
-                filename,
-                scan_time=scan.scan_time
-            )
-
-        # Legacy fallback: use output_dir directly with old structure
         date_str = scan.scan_time.strftime("%Y%m%d")
+
+        if self.output_dirs:
+            return self.output_dirs["base"] / self.radar / "nexrad" / date_str / filename
+
+        # Legacy fallback
         return (self.output_dir / date_str / self.radar / filename).resolve()
 
     def _file_exists(self, path: Path) -> bool:
