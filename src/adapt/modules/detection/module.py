@@ -22,16 +22,13 @@ Key capabilities:
 - Metadata preservation (threshold, z-level, configuration)
 """
 
-import xarray as xr
-import numpy as np
 import logging
-from typing import TYPE_CHECKING
-from scipy.ndimage import binary_closing, label
+
+import numpy as np
+import xarray as xr
+from scipy.ndimage import label
 from skimage.morphology import h_maxima
 from skimage.segmentation import watershed
-
-if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
 
 __all__ = ['RadarCellSegmenter']
 
@@ -139,7 +136,7 @@ class RadarCellSegmenter:
     >>> print(f"Found {ds_labeled['cell_labels'].max()} cells")
     """
 
-    def __init__(self, config: "InternalConfig"):
+    def __init__(self, config):
         """Initialize segmenter with validated configuration.
         
         Parameters
@@ -159,19 +156,16 @@ class RadarCellSegmenter:
         >>> config = resolve_config(ParamConfig())
         >>> segmenter = RadarCellSegmenter(config)
         """
-        self.config = config
-        self.method = config.segmenter.method
-        self.threshold = config.segmenter.threshold
-        self.kernel_size = config.segmenter.closing_kernel
-        self.filter_by_size = config.segmenter.filter_by_size
-        self.min_gridpoints = config.segmenter.min_cellsize_gridpoint
-        self.max_gridpoints = config.segmenter.max_cellsize_gridpoint
-        self.h_maxima = config.segmenter.h_maxima
-        
-        # Variable names from global config
-        self.refl_name = config.global_.var_names.reflectivity
-        self.labels_name = config.global_.var_names.cell_labels
-        self.z_level = config.global_.z_level
+        self.method = config.method
+        self.threshold = config.threshold
+        self.kernel_size = config.closing_kernel
+        self.filter_by_size = config.filter_by_size
+        self.min_gridpoints = config.min_cellsize_gridpoint
+        self.max_gridpoints = config.max_cellsize_gridpoint
+        self.h_maxima = config.h_maxima
+        self.refl_name = config.reflectivity_var
+        self.labels_name = config.labels_var
+        self.z_level = config.z_level
 
         logger.info("RadarCellSegmenter initialized: method=%s, threshold=%s", 
                     self.method, self.threshold)
@@ -294,13 +288,17 @@ class RadarCellSegmenter:
         # we attach labels to original dataset
         ds_out = ds.copy()
         ds_out[self.labels_name] = labels_da
-        logger.debug(f"Labels attached: var={self.labels_name}, shape={labels.shape}, max={labels.max()}")
+        logger.debug(
+            f"Labels attached: var={self.labels_name}, shape={labels.shape}, max={labels.max()}"
+        )
 
         return ds_out
 
-    def _binary_to_labels(self, binary_mask: np.ndarray, field: np.ndarray,
-                          kernel_size: tuple, filter_by_size: bool,
-                          min_gridpoints: int, max_gridpoints: int) -> np.ndarray:
+    def _binary_to_labels(
+        self, binary_mask: np.ndarray, field: np.ndarray,
+        kernel_size: tuple, filter_by_size: bool,
+        min_gridpoints: int, max_gridpoints: int,
+    ) -> np.ndarray:
         """Morphology, detect cells, filter."""
         from skimage.morphology import closing, footprint_rectangle
 
@@ -310,7 +308,9 @@ class RadarCellSegmenter:
 
         # if there are any cells, filter and/or renumber
         if labels.max() > 0:
-            labels = self._filter_and_relabel(labels, filter_by_size, min_gridpoints, max_gridpoints)
+            labels = self._filter_and_relabel(
+                labels, filter_by_size, min_gridpoints, max_gridpoints
+            )
 
         return labels.astype(np.int32)
 
@@ -343,7 +343,9 @@ class RadarCellSegmenter:
 
         return labels_renumbered
 
-    def _relabel_by_size(self, labels: np.ndarray, labels_to_keep: np.ndarray, counts: np.ndarray) -> np.ndarray:
+    def _relabel_by_size(
+        self, labels: np.ndarray, labels_to_keep: np.ndarray, counts: np.ndarray
+    ) -> np.ndarray:
         """Renumber: largest=1."""
         keep_indices = np.isin(np.arange(len(counts)), labels_to_keep)
         keep_counts = counts[keep_indices]
@@ -361,10 +363,9 @@ class RadarCellSegmenter:
 # BaseModule wrapper — Step 6
 # ---------------------------------------------------------------------------
 
-from adapt.modules.base import BaseModule
-from adapt.execution.module_registry import registry
-from adapt.modules.ingest.contracts import assert_gridded
-from .contracts import assert_segmented
+from adapt.contracts import assert_gridded, assert_segmented  # noqa: E402
+from adapt.execution.module_registry import registry  # noqa: E402
+from adapt.modules.base import BaseModule  # noqa: E402
 
 
 def _check_grid_ds_2d(ds):
@@ -397,7 +398,7 @@ class DetectModule(BaseModule):
     """
 
     name = "detection"
-    inputs = ["grid_ds_2d", "config"]
+    inputs = ["grid_ds_2d", "detection_config"]
     outputs = ["segmented_ds", "num_cells"]
     input_contracts  = {"grid_ds_2d": _check_grid_ds_2d}
     output_contracts = {"segmented_ds": _check_segmented_ds}
@@ -406,15 +407,14 @@ class DetectModule(BaseModule):
         self._segmenter = None
 
     def run(self, context: dict) -> dict:
-        config = context["config"]
+        config = context["detection_config"]
         ds_2d = context["grid_ds_2d"]
 
         if self._segmenter is None:
             self._segmenter = RadarCellSegmenter(config)
 
         segmented = self._segmenter.segment(ds_2d)
-        labels_name = config.global_.var_names.cell_labels
-        num_cells = int(segmented[labels_name].max().item())
+        num_cells = int(segmented[config.labels_var].max().item())
 
         return {"segmented_ds": segmented, "num_cells": num_cells}
 

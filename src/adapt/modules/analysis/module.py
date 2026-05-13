@@ -22,17 +22,16 @@ coordinates (latitude, longitude) for flexibility in downstream analysis.
 Author: Bhupendra Raut
 """
 
-import logging
+import contextlib
 import json
+import logging
+from datetime import UTC
+
 import numpy as np
 import pandas as pd
 import xarray as xr
-from typing import TYPE_CHECKING
 from scipy.ndimage import center_of_mass
 from skimage.measure import regionprops
-
-if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
 
 __all__ = ['RadarCellAnalyzer']
 
@@ -117,7 +116,7 @@ class RadarCellAnalyzer:
     >>> print(len(df))  # number of cells in this frame
     """
     
-    def __init__(self, config: "InternalConfig"):
+    def __init__(self, config):
         """Initialize analyzer with validated configuration.
         
         Parameters
@@ -137,12 +136,12 @@ class RadarCellAnalyzer:
         >>> config = resolve_config(ParamConfig())
         >>> analyzer = RadarCellAnalyzer(config)
         """
-        self.config = config
-        self.reflectivity_field = config.global_.var_names.reflectivity
-        self.radar_variables = config.analyzer.radar_variables
-        self.exclude_fields = config.analyzer.exclude_fields
-        self.max_projection_steps = config.projector.max_projection_steps
-        self._adjacency_min_touching = config.analyzer.adjacency_min_touching_boundary_pixels
+        self.reflectivity_field = config.reflectivity_var
+        self.labels_field = config.labels_var
+        self.radar_variables = config.radar_variables
+        self.exclude_fields = config.exclude_fields
+        self.max_projection_steps = config.max_projection_steps
+        self._adjacency_min_touching = config.adjacency_min_touching
 
     def extract(self, ds: xr.Dataset, z_level: int = None) -> pd.DataFrame:
         """Extract geometric and statistical properties from all labeled cells.
@@ -218,7 +217,7 @@ class RadarCellAnalyzer:
         >>> df.to_sql('cells', conn, if_exists='append')  # Database storage
         """
         # Get labels variable name from config
-        labels_name = self.config.global_.var_names.cell_labels
+        labels_name = self.labels_field
 
         # Extract reflectivity (already 2D)
         refl = ds[self.reflectivity_field].values
@@ -266,15 +265,19 @@ class RadarCellAnalyzer:
         along a shared boundary with at least N touching boundary pixel-edges,
         where N is config-driven (`analyzer.adjacency_min_touching_boundary_pixels`).
         """
-        labels_name = self.config.global_.var_names.cell_labels
+        labels_name = self.labels_field
         if labels_name not in ds.data_vars:
-            raise ValueError(f"Missing required labels variable '{labels_name}' for adjacency extraction")
+            raise ValueError(
+                f"Missing required labels variable '{labels_name}' for adjacency extraction"
+            )
         if "time" not in ds.coords:
             raise ValueError("Missing required coordinate 'time' for adjacency extraction")
 
         labels = ds[labels_name].values
         if labels.ndim != 2:
-            raise ValueError(f"Expected 2D labels array for adjacency extraction, got shape={labels.shape}")
+            raise ValueError(
+                f"Expected 2D labels array for adjacency extraction, got shape={labels.shape}"
+            )
 
         scan_time = str(ds.time.values)
         adjacency = self._compute_boundary_adjacency(
@@ -339,7 +342,9 @@ class RadarCellAnalyzer:
             if v >= min_touching_pixels
         ]
         if not rows:
-            return pd.DataFrame(columns=["cell_label_a", "cell_label_b", "touching_boundary_pixels"])
+            return pd.DataFrame(
+                columns=["cell_label_a", "cell_label_b", "touching_boundary_pixels"]
+            )
 
         df = pd.DataFrame(rows)
         df = df.sort_values(["cell_label_a", "cell_label_b"]).reset_index(drop=True)
@@ -359,12 +364,10 @@ class RadarCellAnalyzer:
         if isinstance(tv, np.ndarray):
             tv = tv.reshape(-1)[0]
         if hasattr(tv, "item"):
-            try:
+            with contextlib.suppress(Exception):
                 tv = tv.item()
-            except Exception:
-                pass
         if getattr(type(tv), "__module__", "").startswith("cftime"):
-            from datetime import datetime, timezone
+            from datetime import datetime
             tv = datetime(
                 int(tv.year),
                 int(tv.month),
@@ -373,7 +376,7 @@ class RadarCellAnalyzer:
                 int(tv.minute),
                 int(tv.second),
                 int(getattr(tv, "microsecond", 0) or 0),
-                tzinfo=timezone.utc,
+                tzinfo=UTC,
             )
         return tv
 
@@ -383,9 +386,8 @@ class RadarCellAnalyzer:
         Returns lat/lon grids if available, otherwise returns placeholder grids
         of zeros (valid for in-memory analysis, invalid for geographic output).
         """
-        if "lat" in ds.coords and "lon" in ds.coords:
-            return ds["lat"].values, ds["lon"].values
-        elif "lat" in ds.data_vars and "lon" in ds.data_vars:
+        if (("lat" in ds.coords and "lon" in ds.coords)
+                or ("lat" in ds.data_vars and "lon" in ds.data_vars)):
             return ds["lat"].values, ds["lon"].values
         else:
             # No lat/lon available - use placeholder zeros
@@ -402,10 +404,9 @@ class RadarCellAnalyzer:
         """
         available_vars = []
         for var in self.radar_variables:
-            if var in ds.data_vars and var not in self.exclude_fields:
-                # Check if it's 2D (y, x) or 3D (z, y, x)
-                if ds[var].dims[-2:] == ("y", "x") or ds[var].dims[-3:] == ("z", "y", "x"):
-                    available_vars.append(var)
+            if (var in ds.data_vars and var not in self.exclude_fields
+                    and (ds[var].dims[-2:] == ("y", "x") or ds[var].dims[-3:] == ("z", "y", "x"))):
+                available_vars.append(var)
         return available_vars
 
     def _compute_geometric_centroid(self, mask, lat_grid=None, lon_grid=None):
@@ -492,12 +493,18 @@ class RadarCellAnalyzer:
             y_indices, x_indices = np.where(mask)
             valid_mask = np.isfinite(refl_cell)
             if np.any(valid_mask):
-                centroid_mass_y = int(np.round(np.average(y_indices[valid_mask], weights=refl_cell[valid_mask])))
-                centroid_mass_x = int(np.round(np.average(x_indices[valid_mask], weights=refl_cell[valid_mask])))
+                centroid_mass_y = int(
+                    np.round(np.average(y_indices[valid_mask], weights=refl_cell[valid_mask]))
+                )
+                centroid_mass_x = int(
+                    np.round(np.average(x_indices[valid_mask], weights=refl_cell[valid_mask]))
+                )
             else:
-                centroid_mass_y, centroid_mass_x = int(np.round(geom_props["centroid_y"])), int(np.round(geom_props["centroid_x"]))
+                centroid_mass_y = int(np.round(geom_props["centroid_y"]))
+                centroid_mass_x = int(np.round(geom_props["centroid_x"]))
         else:
-            centroid_mass_y, centroid_mass_x = int(np.round(geom_props["centroid_y"])), int(np.round(geom_props["centroid_x"]))
+            centroid_mass_y = int(np.round(geom_props["centroid_y"]))
+            centroid_mass_x = int(np.round(geom_props["centroid_x"]))
 
         lat_mass, lon_mass = self.get_lat_lon(centroid_mass_x, centroid_mass_y, lat_grid, lon_grid)
 
@@ -546,18 +553,22 @@ class RadarCellAnalyzer:
                     projection_centroids = []
                     
                     # Extract centroids for each projection step
-                    for step_idx in range(min(projections.shape[0], self.max_projection_steps + 1)):
+                    for step_idx in range(
+                        min(projections.shape[0], self.max_projection_steps + 1)
+                    ):
                         proj_mask = projections[step_idx] == region.label
                         if np.any(proj_mask):
                             # Use reusable centroid function (already has lat/lon)
-                            proj_centroid = self._compute_geometric_centroid(proj_mask, lat_grid, lon_grid)
+                            proj_centroid = self._compute_geometric_centroid(
+                                proj_mask, lat_grid, lon_grid
+                            )
                             projection_centroids.append(proj_centroid)
                         else:
                             projection_centroids.append(None)
-                    
+
                     # Store each centroid in both XY and lat/lon
                     if projection_centroids:
-                        # Index 0 = Registration centroid (projection from previous to current frame)
+                        # Index 0 = Registration centroid (projection from previous to current)
                         if projection_centroids[0] is not None:
                             reg_cent = projection_centroids[0]
                             props["cell_centroid_registration_x"] = reg_cent["centroid_x"]
@@ -565,19 +576,32 @@ class RadarCellAnalyzer:
                             if "centroid_lat" in reg_cent:
                                 props["cell_centroid_registration_lat"] = reg_cent["centroid_lat"]
                                 props["cell_centroid_registration_lon"] = reg_cent["centroid_lon"]
-                        
+
                         # Indices 1+ = Forward projection centroids
                         for proj_idx, proj_cent in enumerate(projection_centroids[1:], start=1):
                             if proj_cent is not None:
-                                props[f"cell_centroid_projection{proj_idx}_x"] = proj_cent["centroid_x"]
-                                props[f"cell_centroid_projection{proj_idx}_y"] = proj_cent["centroid_y"]
+                                props[f"cell_centroid_projection{proj_idx}_x"] = (
+                                    proj_cent["centroid_x"]
+                                )
+                                props[f"cell_centroid_projection{proj_idx}_y"] = (
+                                    proj_cent["centroid_y"]
+                                )
                                 if "centroid_lat" in proj_cent:
-                                    props[f"cell_centroid_projection{proj_idx}_lat"] = proj_cent["centroid_lat"]
-                                    props[f"cell_centroid_projection{proj_idx}_lon"] = proj_cent["centroid_lon"]
-                        
+                                    props[f"cell_centroid_projection{proj_idx}_lat"] = (
+                                        proj_cent["centroid_lat"]
+                                    )
+                                    props[f"cell_centroid_projection{proj_idx}_lon"] = (
+                                        proj_cent["centroid_lon"]
+                                    )
+
                         # Also store full projection centroids as JSON for compact storage
                         props["cell_projection_centroids_json"] = json.dumps([
-                            {k: v for k, v in c.items() if c and not (isinstance(v, float) and np.isnan(v))} if c else None
+                            (
+                                {
+                                    k: v for k, v in c.items()
+                                    if c and not (isinstance(v, float) and np.isnan(v))
+                                } if c else None
+                            )
                             for c in projection_centroids
                         ])
             except Exception as e:
@@ -638,9 +662,9 @@ class RadarCellAnalyzer:
 # BaseModule wrapper — Step 6
 # ---------------------------------------------------------------------------
 
-from adapt.modules.base import BaseModule
-from adapt.execution.module_registry import registry
-from .contracts import assert_analysis_output, assert_cell_adjacency
+from adapt.contracts import assert_analysis_output, assert_cell_adjacency  # noqa: E402
+from adapt.execution.module_registry import registry  # noqa: E402
+from adapt.modules.base import BaseModule  # noqa: E402
 
 
 def _check_cell_stats(df):
@@ -675,7 +699,7 @@ class AnalysisModule(BaseModule):
     """
 
     name = "analysis"
-    inputs = ["projected_ds", "config", "scan_time"]
+    inputs = ["projected_ds", "analysis_config", "scan_time"]
     outputs = ["cell_stats", "cell_adjacency"]
     output_contracts = {"cell_stats": _check_cell_stats, "cell_adjacency": _check_cell_adjacency}
 
@@ -683,14 +707,13 @@ class AnalysisModule(BaseModule):
         self._analyzer = None
 
     def run(self, context: dict) -> dict:
-        config = context["config"]
+        config = context["analysis_config"]
         ds_2d = context["projected_ds"]
 
         if self._analyzer is None:
             self._analyzer = RadarCellAnalyzer(config)
 
-        z_level = config.global_.z_level
-        df_cells = self._analyzer.extract(ds_2d, z_level=z_level)
+        df_cells = self._analyzer.extract(ds_2d, z_level=config.z_level)
         df_adjacency = self._analyzer.extract_adjacency(ds_2d)
 
         return {"cell_stats": df_cells, "cell_adjacency": df_adjacency}

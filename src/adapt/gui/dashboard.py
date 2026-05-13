@@ -63,12 +63,12 @@ except Exception:
     pass
 
 # ── Tkinter ───────────────────────────────────────────────────────────────────
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+import tkinter as tk  # noqa: E402
+from tkinter import filedialog, messagebox, scrolledtext, ttk  # noqa: E402
 
 # ── Optional deps ─────────────────────────────────────────────────────────────
 try:
-    from PIL import Image, ImageTk
+    import PIL  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -76,9 +76,9 @@ except ImportError:
 try:
     import matplotlib
     matplotlib.use('TkAgg')
-    import cmweather.cm  # registers ChaseSpectral and other radar colormaps — must follow use()
-    import matplotlib.pyplot as plt
+    import cmweather  # noqa: F401 — registers ChaseSpectral and other radar colormaps — must follow use()
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
     HAS_MPL = True
 except ImportError:
@@ -166,12 +166,10 @@ if HAS_MPL:
                      lat0=0.0, lon0=0.0):
             self._ltrans = None
             if HAS_PROJ and (lat0 or lon0):
-                try:
+                with contextlib.suppress(Exception):
                     self._ltrans = Transformer.from_crs(
                         f'+proj=aeqd +lat_0={lat0} +lon_0={lon0} +units=m',
                         'EPSG:4326', always_xy=True)
-                except Exception:
-                    pass
             super().__init__(canvas, window, pack_toolbar=pack_toolbar)
 
         def set_message(self, s):
@@ -666,7 +664,7 @@ class AdaptDashboard(tk.Tk):
         self.tv = ttk.Treeview(tv_frame, columns=self._tv_cols,
                                show='headings', height=24)
         widths = [70, 60, 75, 80, 80, 85, 75, 90, 90]
-        for c, w in zip(self._tv_cols, widths):
+        for c, w in zip(self._tv_cols, widths, strict=False):
             hdr = (c.replace('radar_differential_reflectivity_mean', 'ZDR mean')
                     .replace('radar_', '').replace('cell_', '')
                     .replace('_', ' '))
@@ -836,10 +834,8 @@ class AdaptDashboard(tk.Tk):
         # "invalid command name" errors from orphaned scheduled calls.
         self._nc_loop_running = False
         for after_id in self._after_ids:
-            try:
+            with contextlib.suppress(Exception):
                 self.after_cancel(after_id)
-            except Exception:
-                pass
         self._after_ids.clear()
 
         # Close matplotlib figures
@@ -1065,8 +1061,9 @@ class AdaptDashboard(tk.Tk):
         db_path = Path(repo) / radar / "catalog.db"
         if db_path.exists():
             try:
-                from adapt.persistence.track_store import TrackStore
                 import sqlite3
+
+                from adapt.persistence.track_store import TrackStore
                 conn = sqlite3.connect(str(db_path))
                 conn.row_factory = sqlite3.Row
                 run_row = conn.execute(
@@ -1220,10 +1217,8 @@ class AdaptDashboard(tk.Tk):
 
         # Close previous dataset
         if self._current_nc_ds is not None and self._current_nc_ds is not ds:
-            try:
+            with contextlib.suppress(Exception):
                 self._current_nc_ds.close()
-            except Exception:
-                pass
         self._current_nc_ds = ds
         self._cell_contours = {}
         for var in self._hv.values():
@@ -1289,11 +1284,11 @@ class AdaptDashboard(tk.Tk):
                                           fraction=0.046, pad=0.04)
 
         # ── Cell contours ─────────────────────────────────────────────────────
-        # for cell_id in np.unique(labels_data[labels_data > 0]):
-        #     cs = ax.contour(x_grid, y_grid,
-        #                     (labels_data == cell_id).astype(float),
-        #                     levels=[0.5], colors='#2C3539', linewidths=0.5, zorder=50)
-        #     self._cell_contours[int(cell_id)] = cs
+        for cell_id in np.unique(labels_data[labels_data > 0]):
+            cs = ax.contour(x_grid, y_grid,
+                            (labels_data == cell_id).astype(float),
+                            levels=[0.8], colors='#2C3539', linewidths=0.5, zorder=50)
+            self._cell_contours[int(cell_id)] = cs
 
         # ── Projection contours ───────────────────────────────────────────────
         if 'cell_projections' in ds.data_vars:
@@ -1306,7 +1301,7 @@ class AdaptDashboard(tk.Tk):
                 _ls_cycle = ['dashed', 'dashdot', 'dotted']
                 for i in range(1, end_frame):
                     alpha = max(0.5, 1.0 - i / n_frames)
-                    lw    = max(0.5, 1.5 - i * 0.2)
+                    lw    = max(0.7, 1.6 - i * 0.2)
                     ls    = _ls_cycle[(i - 1) % len(_ls_cycle)]
                     lp = proj_da.isel({fo: i}).values
                     for cid in np.unique(lp[~np.isnan(lp) & (lp > 0)]):
@@ -1458,9 +1453,8 @@ class AdaptDashboard(tk.Tk):
 
         if history_df is None or history_df.empty:
             df = self._current_cell_df
-            if df is not None:
-                if cell_uid is not None and 'cell_uid' in df.columns:
-                    history_df = df[df['cell_uid'] == cell_uid].copy()
+            if df is not None and cell_uid is not None and 'cell_uid' in df.columns:
+                history_df = df[df['cell_uid'] == cell_uid].copy()
 
         self._clear_tracking_history()
         self._selected_cell_uid = str(cell_uid) if cell_uid is not None else None
@@ -1503,10 +1497,8 @@ class AdaptDashboard(tk.Tk):
     def _clear_tracking_history(self) -> None:
         if self._track_overlay:
             for artist in self._track_overlay:
-                try:
+                with contextlib.suppress(Exception):
                     artist.remove()
-                except Exception:
-                    pass
             self._track_overlay = None
         self._selected_cell_uid = None
 
@@ -1546,7 +1538,8 @@ class AdaptDashboard(tk.Tk):
                 cell_uid = str(track_df['cell_uid'].dropna().iloc[0])
         else:
             cell_uid = self._selected_cell_uid
-            if not cell_uid or self._current_cell_df is None or 'cell_uid' not in self._current_cell_df.columns:
+            if (not cell_uid or self._current_cell_df is None
+                    or 'cell_uid' not in self._current_cell_df.columns):
                 return
             track_df = (
                 self._current_cell_df[self._current_cell_df['cell_uid'] == str(cell_uid)]
@@ -1605,8 +1598,11 @@ class AdaptDashboard(tk.Tk):
     def _clear_time_series(self) -> None:
         if self._ts_axes is None:
             return
-        for ax, (ylabel, title) in zip(self._ts_axes,
-                                        [('km²', 'Area'), ('dBZ', 'Reflectivity'), ('dB', 'ZDR')]):
+        for ax, (ylabel, title) in zip(
+            self._ts_axes,
+            [('km²', 'Area'), ('dBZ', 'Reflectivity'), ('dB', 'ZDR')],
+            strict=False,
+        ):
             ax.cla()
             self._style_ts_ax(ax, ylabel, title)
             ax.text(0.5, 0.5, 'click a cell', transform=ax.transAxes,
@@ -1647,10 +1643,8 @@ class AdaptDashboard(tk.Tk):
             self._canvas_refs = None
             self._hover_canvas = None
         if self._current_nc_ds is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._current_nc_ds.close()
-            except Exception:
-                pass
             self._current_nc_ds = None
         self._cell_contours = {}
         for var in self._hv.values():
@@ -1835,10 +1829,8 @@ class AdaptDashboard(tk.Tk):
         mask = pd.Series(True, index=df.index)
         for col, (lo_v, hi_v) in self._flt.items():
             if col in df.columns:
-                try:
+                with contextlib.suppress(Exception):
                     mask &= df[col].between(float(lo_v.get()), float(hi_v.get()))
-                except Exception:
-                    pass
 
         # Cell UID prefix filter
         pid_prefix = self._cell_uid_filter.get().strip().upper() if self._cell_uid_filter else ''
@@ -1875,7 +1867,8 @@ class AdaptDashboard(tk.Tk):
                 'time_label': 65, 'cell_uid': 160, 'cell_label': 55,
                 'cell_area_sqkm': 70, 'area_40dbz_km2': 70,
                 'radar_reflectivity_max': 75, 'radar_reflectivity_mean': 75,
-                'radar_differential_reflectivity_max': 75, 'radar_differential_reflectivity_mean': 75,
+                'radar_differential_reflectivity_max': 75,
+                'radar_differential_reflectivity_mean': 75,
                 'cell_centroid_mass_lat': 80, 'cell_centroid_mass_lon': 80,
                 'n_adjacent_cells': 65,
             }

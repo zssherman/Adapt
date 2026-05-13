@@ -49,6 +49,22 @@ jobs:
       - name: Install adapt
         run: pip install -e . --no-deps --force-reinstall
 
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Install import-linter
+        run: pip install import-linter
+
+      - name: Show environment info
+        run: |
+          python --version
+          pip list | head -n 30
+
+      - name: Lint with ruff
+        run: ruff check src tests
+
+      - name: Check import architecture
+        run: lint-imports --no-cache
       - name: Run tests
         run: |
           pytest -m "not integration" \

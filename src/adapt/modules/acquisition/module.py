@@ -7,19 +7,13 @@ Monitors AWS S3 bucket for new NEXRAD radar files and downloads them locally
 in realtime or historical batches. Deduplicates files to avoid re-downloading.
 """
 
+import logging
 import threading
 import time
-import logging
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
 
 from nexradaws import NexradAwsInterface
-
-from adapt.configuration.schemas.directories import get_nexrad_path
-
-if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
 
 __all__ = ['AwsNexradDownloader']
 
@@ -73,7 +67,7 @@ class AwsNexradDownloader(threading.Thread):
 
     def __init__(
         self,
-        config: "InternalConfig",
+        config,
         output_dir: Path = None,
         output_dirs: dict = None,
         result_queue=None,
@@ -140,7 +134,7 @@ class AwsNexradDownloader(threading.Thread):
         self.result_queue = result_queue
         self.conn = conn or NexradAwsInterface()
         # injectable time helpers for testing
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or time.sleep
 
         self._stop_event = threading.Event()
@@ -284,7 +278,7 @@ class AwsNexradDownloader(threading.Thread):
         while not self.stopped():
             try:
                 self._download_task()
-            except Exception as e:
+            except Exception:
                 logger.exception("Download task failed")
 
             # Historical: exit after completion
@@ -426,7 +420,7 @@ class AwsNexradDownloader(threading.Thread):
         all_checks_failed = True  # Track if all checks failed (don't warn in that case)
 
         while current <= end_date:
-            dt = datetime(current.year, current.month, current.day, tzinfo=timezone.utc)
+            dt = datetime(current.year, current.month, current.day, tzinfo=UTC)
             y = dt.strftime("%Y")
             m = dt.strftime("%m")
             d = dt.strftime("%d")
@@ -510,27 +504,21 @@ class AwsNexradDownloader(threading.Thread):
         return new_downloads
 
     def _get_local_path(self, scan) -> Path:
-        """Get local path for scan using new structure: base/RADAR_ID/nexrad/YYYYMMDD/filename."""
+        """Get local path for scan: base/RADAR_ID/nexrad/YYYYMMDD/filename."""
         filename = Path(scan.key).name
-
-        # Use new path function if output_dirs available
-        if self.output_dirs:
-            return get_nexrad_path(
-                self.output_dirs,
-                self.radar,
-                filename,
-                scan_time=scan.scan_time
-            )
-
-        # Legacy fallback: use output_dir directly with old structure
         date_str = scan.scan_time.strftime("%Y%m%d")
+
+        if self.output_dirs:
+            return self.output_dirs["base"] / self.radar / "nexrad" / date_str / filename
+
+        # Legacy fallback
         return (self.output_dir / date_str / self.radar / filename).resolve()
 
     def _file_exists(self, path: Path) -> bool:
         """Check if valid file exists."""
         try:
             return path.exists() and path.stat().st_size >= self._min_file_size
-        except:
+        except Exception:
             return False
 
     def _download_scan(self, scan, local_path: Path) -> bool:
@@ -573,7 +561,9 @@ class AwsNexradDownloader(threading.Thread):
             file_id = path.stem
             if tracker:
                 tracker.register_file(file_id, self.radar, scan_time, path)
-                timings = {"download_seconds": download_seconds} if download_seconds is not None else None
+                timings = (
+                    {"download_seconds": download_seconds} if download_seconds is not None else None
+                )
                 tracker.mark_stage_complete(file_id, "downloaded", path=path, timings=timings)
 
             self.result_queue.put(

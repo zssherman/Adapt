@@ -15,13 +15,11 @@ The Registry is a singleton per root_dir and provides:
 Thread-safe for concurrent writer/reader access via SQLite WAL mode.
 """
 
-import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 
@@ -30,7 +28,7 @@ __all__ = ['RepositoryRegistry']
 logger = logging.getLogger(__name__)
 
 # Cache of registry instances per root directory
-_registry_cache: Dict[str, 'RepositoryRegistry'] = {}
+_registry_cache: dict[str, 'RepositoryRegistry'] = {}
 _cache_lock = threading.Lock()
 
 
@@ -50,7 +48,7 @@ class RepositoryRegistry:
     >>> runs = registry.list_runs()
     """
     
-    def __init__(self, root_dir: Union[str, Path]):
+    def __init__(self, root_dir: str | Path):
         """Initialize registry at root directory.
         
         Parameters
@@ -63,7 +61,7 @@ class RepositoryRegistry:
         
         # Thread safety
         self._lock = threading.RLock()
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         
         # Initialize database
         self._init_database()
@@ -71,7 +69,7 @@ class RepositoryRegistry:
         logger.debug("RepositoryRegistry initialized at %s", self.db_path)
     
     @classmethod
-    def get_instance(cls, root_dir: Union[str, Path]) -> 'RepositoryRegistry':
+    def get_instance(cls, root_dir: str | Path) -> 'RepositoryRegistry':
         """Get singleton instance for a root directory.
         
         Parameters
@@ -161,7 +159,9 @@ class RepositoryRegistry:
                     last_updated TEXT NOT NULL
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_radars_updated ON radars(last_updated DESC)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_radars_updated ON radars(last_updated DESC)"
+            )
             
             # Item types table
             conn.execute("""
@@ -175,7 +175,7 @@ class RepositoryRegistry:
             """)
             
             # Prepopulate item types
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             item_types_data = [
                 ('gridded3d', 'Gridded reflectivity volume', 'netcdf', '3d', now),
                 ('segmentation2d', 'Cell segmentation masks', 'netcdf', '2d', now),
@@ -198,8 +198,8 @@ class RepositoryRegistry:
     def register_radar(
         self,
         radar: str,
-        lat: Optional[float] = None,
-        lon: Optional[float] = None
+        lat: float | None = None,
+        lon: float | None = None
     ) -> None:
         """Register a radar in the repository.
         
@@ -217,20 +217,24 @@ class RepositoryRegistry:
         
         catalog_path = str(radar_dir / "catalog.db")
         data_path = str(radar_dir)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         
         conn = self._get_connection()
         with self._lock:
-            conn.execute("""
-                INSERT OR REPLACE INTO radars 
-                (radar, catalog_path, data_path, location_lat, location_lon, created_at, last_updated)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO radars
+                (radar, catalog_path, data_path,
+                 location_lat, location_lon, created_at, last_updated)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (radar, catalog_path, data_path, lat, lon, now, now))
+                """,
+                (radar, catalog_path, data_path, lat, lon, now, now),
+            )
             conn.commit()
         
         logger.debug("Radar registered: %s at %s", radar, data_path)
 
-    def get_radar_location(self, radar: str) -> tuple[Optional[float], Optional[float]]:
+    def get_radar_location(self, radar: str) -> tuple[float | None, float | None]:
         """Get stored radar location (lat, lon) from the registry."""
         conn = self._get_connection()
         with self._lock:
@@ -259,7 +263,7 @@ class RepositoryRegistry:
             raise ValueError(f"Invalid lat/lon types: {type(lat)} {type(lon)}") from e
 
         conn = self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         with self._lock:
             row = conn.execute(
@@ -275,12 +279,13 @@ class RepositoryRegistry:
                 return
 
             conn.execute(
-                "UPDATE radars SET location_lat = ?, location_lon = ?, last_updated = ? WHERE radar = ?",
+                "UPDATE radars SET location_lat = ?, location_lon = ?, "
+                "last_updated = ? WHERE radar = ?",
                 (lat_f, lon_f, now, radar),
             )
             conn.commit()
     
-    def get_radar_catalog_path(self, radar: str) -> Optional[Path]:
+    def get_radar_catalog_path(self, radar: str) -> Path | None:
         """Get path to radar's catalog database.
         
         Parameters
@@ -325,8 +330,8 @@ class RepositoryRegistry:
         self,
         run_id: str,
         radar: str,
-        mode: Optional[str] = None,
-        config_path: Optional[str] = None,
+        mode: str | None = None,
+        config_path: str | None = None,
         repository_version: str = "0.1.0"
     ) -> None:
         """Register a new pipeline run.
@@ -344,15 +349,19 @@ class RepositoryRegistry:
         repository_version : str
             Adapt version
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         
         conn = self._get_connection()
         with self._lock:
-            conn.execute("""
-                INSERT OR IGNORE INTO runs 
-                (run_id, radar, start_time, status, mode, config_path, repository_version, created_at)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO runs
+                (run_id, radar, start_time, status, mode,
+                 config_path, repository_version, created_at)
                 VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-            """, (run_id, radar, now, mode, config_path, repository_version, now))
+                """,
+                (run_id, radar, now, mode, config_path, repository_version, now),
+            )
             conn.commit()
         
         logger.debug("Run registered: %s for radar %s", run_id, radar)
@@ -361,7 +370,7 @@ class RepositoryRegistry:
         self,
         run_id: str,
         status: str,
-        end_time: Optional[str] = None
+        end_time: str | None = None
     ) -> None:
         """Update run status.
         
@@ -390,7 +399,7 @@ class RepositoryRegistry:
         
         logger.debug(f"Run {run_id} status updated to {status}")
     
-    def list_runs(self, radar: Optional[str] = None) -> pd.DataFrame:
+    def list_runs(self, radar: str | None = None) -> pd.DataFrame:
         """Get list of runs, optionally filtered by radar.
         
         Parameters
@@ -412,7 +421,7 @@ class RepositoryRegistry:
                 query = "SELECT * FROM runs ORDER BY start_time DESC"
                 return pd.read_sql_query(query, conn)
     
-    def get_latest_run(self, radar: Optional[str] = None) -> Optional[Dict]:
+    def get_latest_run(self, radar: str | None = None) -> dict | None:
         """Get the most recent run.
         
         Parameters
@@ -443,7 +452,7 @@ class RepositoryRegistry:
     # Item Types Management
     # =========================================================================
     
-    def list_item_types(self) -> List[str]:
+    def list_item_types(self) -> list[str]:
         """Get list of registered item types.
         
         Returns
@@ -457,7 +466,7 @@ class RepositoryRegistry:
         
         return [row['item_type'] for row in rows]
     
-    def get_item_type_info(self, item_type: str) -> Optional[Dict]:
+    def get_item_type_info(self, item_type: str) -> dict | None:
         """Get metadata for an item type.
         
         Parameters

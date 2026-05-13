@@ -1,0 +1,156 @@
+# Import Linter configuration for ADAPT
+#
+# Purpose:
+# Enforce architectural boundaries so the codebase stays modular,
+# testable, and free of accidental coupling.
+#
+# Run:
+#   lint-imports
+#
+# Philosophy:
+# - Modules are scientific units and must remain independent.
+# - Shared behaviour belongs in contracts, runtime, or persistence.
+# - Prevent cross-layer imports early, before they calcify.
+
+[importlinter]
+root_packages =
+    adapt
+
+include_external_packages = False
+
+# ==========================================================
+# 1. Scientific modules must remain independent
+# ==========================================================
+#
+# No module may import from any other module — directly or
+# transitively. Shared types belong in adapt.contracts.
+
+[importlinter:contract:independent_modules]
+name = Adapt modules remain independent
+type = independence
+modules =
+    adapt.modules.acquisition
+    adapt.modules.analysis
+    adapt.modules.detection
+    adapt.modules.ingest
+    adapt.modules.projection
+    adapt.modules.tracking
+
+# ==========================================================
+# 2. Modules do not depend on runtime orchestration
+# ==========================================================
+#
+# Runtime coordinates modules; modules must not call back into it.
+# Science is stateless. Orchestration is runtime's job.
+
+[importlinter:contract:modules_do_not_import_runtime]
+name = Modules do not depend on runtime
+type = forbidden
+source_modules =
+    adapt.modules
+forbidden_modules =
+    adapt.runtime
+
+# ==========================================================
+# 3. Modules do not reach into infrastructure layers
+# ==========================================================
+#
+# Modules produce data. Infrastructure stores and serves it.
+# A module that imports persistence or GUI has too many responsibilities.
+#
+# Includes configuration: modules must receive their settings
+# via dependency injection from the execution layer — not read
+# configuration themselves.
+
+[importlinter:contract:modules_do_not_import_infrastructure]
+name = Modules do not import infrastructure layers
+type = forbidden
+source_modules =
+    adapt.modules
+forbidden_modules =
+    adapt.persistence
+    adapt.api
+    adapt.gui
+    adapt.visualization
+    adapt.configuration
+
+# ==========================================================
+# 4. Persistence is infrastructure — no science, no orchestration
+# ==========================================================
+#
+# Persistence reads and writes. It must not depend on modules
+# (would create a circular science ↔ storage loop) or runtime
+# (would couple storage to one execution strategy).
+
+[importlinter:contract:persistence_is_infra]
+name = Persistence does not depend on modules or runtime
+type = forbidden
+source_modules =
+    adapt.persistence
+forbidden_modules =
+    adapt.modules
+    adapt.runtime
+
+# ==========================================================
+# 5. Nothing inside core depends on the CLI
+# ==========================================================
+#
+# CLI is the outermost shell. It may import anything.
+# Core packages must not import it — that would make them
+# impossible to use as a library.
+
+[importlinter:contract:no_internal_cli_dependency]
+name = Internal packages do not depend on CLI
+type = forbidden
+source_modules =
+    adapt.modules
+    adapt.runtime
+    adapt.persistence
+    adapt.execution
+forbidden_modules =
+    adapt.cli
+
+# ==========================================================
+# 6. Core must not depend on optional extensions
+# ==========================================================
+#
+# Extensions add capability without modifying core.
+# If core imports extensions, extensions can no longer be
+# optional and the plug-in model breaks.
+
+[importlinter:contract:core_not_depend_on_extensions]
+name = Core packages do not depend on extensions
+type = forbidden
+source_modules =
+    adapt.modules
+    adapt.runtime
+    adapt.persistence
+    adapt.execution
+    adapt.configuration
+forbidden_modules =
+    adapt.extensions
+
+# ==========================================================
+# 7. Contracts package imports no adapt internals
+# ==========================================================
+#
+# adapt.contracts is the only layer both modules and execution
+# may share. It must depend on nothing inside adapt so it
+# never creates import cycles.
+
+[importlinter:contract:contracts_are_pure]
+name = Contracts package imports no adapt internals
+type = forbidden
+source_modules =
+    adapt.contracts
+forbidden_modules =
+    adapt.modules
+    adapt.runtime
+    adapt.persistence
+    adapt.configuration
+    adapt.execution
+    adapt.api
+    adapt.gui
+    adapt.visualization
+    adapt.cli
+    adapt.extensions

@@ -19,6 +19,7 @@ used. Any value from the config file can be overridden with CLI flags.
 """
 
 import argparse
+import contextlib
 import os
 import signal
 import sys
@@ -26,6 +27,7 @@ import threading
 import time
 from pathlib import Path
 
+from adapt import __version__
 
 # ---------------------------------------------------------------------------
 # Single-instance enforcement
@@ -56,10 +58,8 @@ def _write_pid() -> None:
 
 
 def _remove_pid() -> None:
-    try:
+    with contextlib.suppress(Exception):
         _PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,6 @@ def _build_config_parser(sub: argparse.ArgumentParser) -> None:
 def _config_cmd(args: argparse.Namespace) -> None:
     """Write a config.yaml template to the specified path."""
     from datetime import datetime
-    import os
 
     try:
         cwd = Path.cwd()
@@ -354,8 +353,20 @@ def main() -> None:
     """Top-level CLI dispatcher."""
     parser = argparse.ArgumentParser(
         prog='adapt',
-        description='Adapt - Real-Time data processing for informed adaptive scanning of ARM weather radars.',
+        description=(
+            'Adapt - Real-Time data processing for informed adaptive scanning '
+            'of ARM weather radars.'
+        ),
     )
+    
+    # Add version argument
+    adapt_module_path = Path(__file__).parent
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'%(prog)s {__version__}\nInstalled at: {adapt_module_path}',
+    )
+    
     subparsers = parser.add_subparsers(dest='command', metavar='COMMAND')
     subparsers.required = True
 

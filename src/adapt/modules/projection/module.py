@@ -21,15 +21,12 @@ Output enables cell tracking and motion-based warnings in operational systems.
 """
 
 import logging
+
+import cv2
 import numpy as np
 import xarray as xr
-import cv2
-from typing import TYPE_CHECKING
-from scipy.spatial import Delaunay
 from scipy.ndimage import binary_dilation
-
-if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
+from scipy.spatial import Delaunay
 
 __all__ = ['RadarCellProjector']
 
@@ -123,10 +120,12 @@ class RadarCellProjector:
     >>> projector = RadarCellProjector(config)
     >>> ds_with_motion = projector.project([ds_t1, ds_t0])
     >>> num_projections = ds_with_motion["cell_projections"].shape[0]
-    >>> print(f"Generated {num_projections} projections (1 registration + {num_projections-1} future)")
+    >>> print(
+    ...     f"Generated {num_projections} projections (1 registration + {num_projections-1} future)"
+    ... )
     """
 
-    def __init__(self, config: "InternalConfig"):
+    def __init__(self, config):
         """Initialize projector with validated configuration.
         
         Parameters
@@ -146,23 +145,22 @@ class RadarCellProjector:
         >>> config = resolve_config(ParamConfig())
         >>> projector = RadarCellProjector(config)
         """
-        self.config = config
-        self.method = config.projector.method
-        self.nan_fill = config.projector.nan_fill_value
-        self.max_interval_minutes = config.projector.max_time_interval_minutes
-        self.max_proj_steps = config.projector.max_projection_steps
+        self.method = config.method
+        self.nan_fill = config.nan_fill_value
+        self.max_interval_minutes = config.max_time_interval_minutes
+        self.max_proj_steps = config.max_projection_steps
         self.flow_params = {
-            "pyr_scale": config.projector.flow_params.pyr_scale,
-            "levels": config.projector.flow_params.levels,
-            "winsize": config.projector.flow_params.winsize,
-            "iterations": config.projector.flow_params.iterations,
-            "poly_n": config.projector.flow_params.poly_n,
-            "poly_sigma": config.projector.flow_params.poly_sigma,
-            "flags": config.projector.flow_params.flags,
+            "pyr_scale": config.pyr_scale,
+            "levels": config.levels,
+            "winsize": config.winsize,
+            "iterations": config.iterations,
+            "poly_n": config.poly_n,
+            "poly_sigma": config.poly_sigma,
+            "flags": config.flags,
         }
-        self.min_motion_threshold = config.projector.min_motion_threshold
-        self.max_flow_magnitude = config.projector.max_flow_magnitude
-        self.refl_var = config.global_.var_names.reflectivity
+        self.min_motion_threshold = config.min_motion_threshold
+        self.max_flow_magnitude = config.max_flow_magnitude
+        self.refl_var = config.reflectivity_var
 
     def project(self, ds_list):
         """Project cells forward using optical flow motion vectors.
@@ -252,8 +250,12 @@ class RadarCellProjector:
 
         # Get reflectivity from ds (already at correct z-level from processor)
         # Reflectivity is always 2D at the configured z-level
-        refl1 = np.nan_to_num(ds_list[0][self.refl_var].values, nan=self.nan_fill).astype(np.float32)
-        refl2 = np.nan_to_num(ds_list[1][self.refl_var].values, nan=self.nan_fill).astype(np.float32)
+        refl1 = (
+            np.nan_to_num(ds_list[0][self.refl_var].values, nan=self.nan_fill).astype(np.float32)
+        )
+        refl2 = (
+            np.nan_to_num(ds_list[1][self.refl_var].values, nan=self.nan_fill).astype(np.float32)
+        )
 
         refl1_norm, refl2_norm = self._normalize(refl1, refl2)
         flow = cv2.calcOpticalFlowFarneback(refl1_norm, refl2_norm, None, **self.flow_params)
@@ -267,7 +269,8 @@ class RadarCellProjector:
 
         # Generate projections:
         # - First projection (offset=0) is registration: t-1 → t0 (uses labels from t-1)
-        # - Subsequent projections (offset=1,2,...) are future: t0→t1, t1→t2, etc. (uses labels from t0)
+        # - Subsequent projections (offset=1,2,...) are future: t0→t1, t1→t2, etc.
+        #   (uses labels from t0)
         # So total projections = max_proj_steps + 1 (1 for registration + N for future)
 
         labels_proj_list = []
@@ -278,8 +281,8 @@ class RadarCellProjector:
         
         # Future projections - project current labels (t0) forward (n steps)
         # Each pixel carries its original flow value and uses accumulated displacement.
-        # @TODO I have removed more complecated  logic of using flow at new positions for each step, 
-        # because some cells did not move in noisy radar data during the test. I will test it again later.
+        # @TODO I have removed more complecated logic of using flow at new positions for each step,
+        # because some cells did not move in noisy radar data during the test.
         future_projections = self._project_frames(labels_curr, flow, n_steps=self.max_proj_steps)
         for i in range(self.max_proj_steps):
             labels_proj_list.append(future_projections[i])
@@ -431,8 +434,8 @@ class RadarCellProjector:
         # Note: Processor already validated time gap, so we just warn if large
         if abs(time_diff_minutes) > max_interval_minutes:
             logger.warning(
-                f"Time interval {time_diff_minutes:.1f} min exceeds max {max_interval_minutes} min. "
-                "Processor should have filtered this pair."
+                f"Time interval {time_diff_minutes:.1f} min exceeds max "
+                f"{max_interval_minutes} min. Processor should have filtered this pair."
             )
 
         return time_diff_minutes
@@ -561,9 +564,9 @@ class RadarCellProjector:
 # BaseModule wrapper — Step 6
 # ---------------------------------------------------------------------------
 
-from adapt.modules.base import BaseModule
-from adapt.execution.module_registry import registry
-from adapt.modules.detection.contracts import assert_segmented
+from adapt.contracts import assert_segmented  # noqa: E402
+from adapt.execution.module_registry import registry  # noqa: E402
+from adapt.modules.base import BaseModule  # noqa: E402
 
 
 def _check_segmented_ds(ds):
@@ -574,66 +577,47 @@ class ProjectionModule(BaseModule):
     """BaseModule wrapper for RadarCellProjector.
 
     Computes optical flow between consecutive radar frames and projects
-    cell positions forward in time. Maintains a rolling frame history
-    as instance state so it persists across files.
+    cell positions forward in time. Stateless: receives the frame pair
+    via the context key ``dataset_history`` (injected by the processor).
 
     Context inputs
     --------------
     segmented_ds : xr.Dataset
-        2D segmented dataset (output of DetectModule).
-    nexrad_file : str
-        Current file path (used as history key).
+        2D segmented dataset for the current frame (output of DetectModule).
+    dataset_history : list of (str, xr.Dataset)
+        Rolling history of (filepath, segmented_ds) tuples supplied by the
+        processor. Must contain exactly 2 entries before this module is called.
     config : InternalConfig
         Runtime configuration.
 
     Context outputs
     ---------------
     projected_ds : xr.Dataset
-        2D dataset with projection fields added (or original if <2 frames).
+        2D dataset with heading_x, heading_y, and cell_projections added.
     """
 
     name = "projection"
-    inputs = ["segmented_ds", "nexrad_file", "config"]
+    inputs = ["segmented_ds", "dataset_history", "projection_config"]
     outputs = ["projected_ds"]
     input_contracts = {"segmented_ds": _check_segmented_ds}
-    # Output: projected_ds only present when 2+ frames available and projection succeeds
-    # Raises exception if time gap too large or computation fails
-    # Returns context unchanged (no projected_ds) if insufficient history (< 2 frames)
 
     def __init__(self) -> None:
         self._projector = None
-        self._dataset_history = []  # list of (filepath, ds_2d) tuples
 
     def run(self, context: dict) -> dict:
-        config = context["config"]
-        ds_2d = context["segmented_ds"]
-        filepath = context["nexrad_file"]
+        config = context["projection_config"]
+        dataset_history = context["dataset_history"]  # list of (filepath, ds_2d)
 
         if self._projector is None:
             self._projector = RadarCellProjector(config)
 
-        # Note: Processor orchestration injects history directly into
-        # self._dataset_history before calling pipeline. For standalone
-        # testing, we still support building history internally.
-        max_history = config.processor.max_history
-
-        # If history is empty or doesn't contain current file, build internally
-        if not self._dataset_history or self._dataset_history[-1][0] != filepath:
-            # Build history internally (standalone mode)
-            self._dataset_history.append((filepath, ds_2d))
-            if len(self._dataset_history) > max_history:
-                self._dataset_history.pop(0)
-            logger.debug("Building history internally (%d frames)", len(self._dataset_history))
-
-        # Must have 2 frames (guaranteed by processor orchestration, but double-check)
-        if len(self._dataset_history) < 2:
+        if len(dataset_history) < 2:
             raise ValueError(
-                f"ProjectionModule requires 2 frames, but only {len(self._dataset_history)} available. "
-                "Processor should orchestrate frame pairing before calling projection."
+                f"ProjectionModule requires 2 frames in dataset_history, "
+                f"got {len(dataset_history)}. Processor must pair frames before calling."
             )
 
-        # Compute optical flow
-        ds_list = [ds for _, ds in self._dataset_history]
+        ds_list = [ds for _, ds in dataset_history]
         projected = self._projector.project(ds_list)
         return {"projected_ds": projected}
 

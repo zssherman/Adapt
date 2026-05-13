@@ -7,9 +7,7 @@ Each test uses an in-memory SQLite database with the three-table schema.
 Inputs are synthetic DataFrames; no file I/O.
 """
 import sqlite3
-import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -107,7 +105,7 @@ def store(db_path):
 
 
 def _t(iso: str) -> datetime:
-    return datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(iso).replace(tzinfo=UTC)
 
 
 def _cell_stats(cell_label: int, area: float = 4.0, refl: float = 40.0) -> pd.DataFrame:
@@ -133,7 +131,9 @@ def _tracked_cells(cell_label: int, cell_uid: str) -> pd.DataFrame:
     }])
 
 def _empty_cell_adjacency() -> pd.DataFrame:
-    return pd.DataFrame(columns=["time", "cell_label_a", "cell_label_b", "touching_boundary_pixels"])
+    return pd.DataFrame(
+        columns=["time", "cell_label_a", "cell_label_b", "touching_boundary_pixels"]
+    )
 
 def _initiation_event(scan_time: datetime, cell_uid: str, cell_label: int) -> pd.DataFrame:
     ts = scan_time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -150,7 +150,9 @@ def _initiation_event(scan_time: datetime, cell_uid: str, cell_label: int) -> pd
     }])
 
 
-def _continue_event(scan_time: datetime, cell_uid: str, src_label: int, tgt_label: int) -> pd.DataFrame:
+def _continue_event(
+    scan_time: datetime, cell_uid: str, src_label: int, tgt_label: int
+) -> pd.DataFrame:
     ts = scan_time.strftime("%Y-%m-%dT%H:%M:%SZ")
     return pd.DataFrame([{
         "time": scan_time,
@@ -180,7 +182,9 @@ def _termination_event(scan_time: datetime, cell_uid: str, cell_label: int) -> p
     }])
 
 
-def _split_events(scan_time: datetime, parent_id: str, child_id: str, parent_label: int, child_label: int) -> pd.DataFrame:
+def _split_events(
+    scan_time: datetime, parent_id: str, child_id: str, parent_label: int, child_label: int
+) -> pd.DataFrame:
     ts = scan_time.strftime("%Y-%m-%dT%H:%M:%SZ")
     return pd.DataFrame([{
         "time": scan_time,
@@ -195,7 +199,9 @@ def _split_events(scan_time: datetime, parent_id: str, child_id: str, parent_lab
     }])
 
 
-def _merge_events(scan_time: datetime, src_id: str, tgt_id: str, src_label: int, tgt_label: int) -> pd.DataFrame:
+def _merge_events(
+    scan_time: datetime, src_id: str, tgt_id: str, src_label: int, tgt_label: int
+) -> pd.DataFrame:
     ts = scan_time.strftime("%Y-%m-%dT%H:%M:%SZ")
     return pd.DataFrame([{
         "time": scan_time,
@@ -367,7 +373,7 @@ def test_unique_constraint_rejects_duplicate_cell_label_per_scan(store):
                      _initiation_event(t, "NN", 1), _empty_cell_adjacency())
 
     # Writing same cell_label with different cell_uid should raise on unique(cell_label)
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 — sqlite3.IntegrityError on unique constraint
         store.write_scan("r1", t, _cell_stats(1), _tracked_cells(1, "OO"),
                          _initiation_event(t, "OO", 1), _empty_cell_adjacency())
 

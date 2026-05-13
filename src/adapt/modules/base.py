@@ -13,57 +13,9 @@ Step 6 of the refactor. BaseModule is the target interface definition.
 """
 
 from abc import ABC, abstractmethod
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# Contract Enforcement Infrastructure
-# ────────────────────────────────────────────────────────────────────────────
-
-
-class ContractViolation(RuntimeError):
-    """Raised when a pipeline contract is violated.
-
-    This indicates a bug in pipeline logic, not bad user input or recoverable
-    science edge cases. It means a pipeline stage did not produce the invariants
-    it promised.
-
-    Key distinction:
-    - ValueError: User/config error (handled by Pydantic)
-    - ContractViolation: Pipeline bug (programmer error)
-    - Exception: Recoverable science issues (try/except in algorithms)
-    """
-    pass
-
-
-def require(condition: bool, message: str) -> None:
-    """Enforce a pipeline contract.
-
-    This is called at stage boundaries to verify the preceding stage
-    produced the guaranteed invariants. It is fail-fast: no recovery,
-    no fallback, no silence.
-
-    Parameters
-    ----------
-    condition : bool
-        The invariant that must be true. If False, ContractViolation is raised.
-
-    message : str
-        Error message explaining the contract violation (for debugging).
-
-    Raises
-    ------
-    ContractViolation
-        If condition is False. This indicates a bug in pipeline logic.
-
-    Examples
-    --------
-    >>> require("x" in ds.coords, "Grid contract: missing 'x' coordinate")
-    >>> require(df.shape[0] > 0, "Analysis contract: at least one cell expected")
-    """
-    if not condition:
-        raise ContractViolation(message)
-
+from adapt.contracts import ContractViolation, require  # noqa: F401 — re-exported for callers
 
 # ────────────────────────────────────────────────────────────────────────────
 # BaseModule Interface
@@ -101,10 +53,10 @@ class BaseModule(ABC):
     """
 
     name: ClassVar[str] = ""
-    inputs: ClassVar[List[str]] = []
-    outputs: ClassVar[List[str]] = []
-    input_contracts:  ClassVar[Dict[str, object]] = {}
-    output_contracts: ClassVar[Dict[str, object]] = {}
+    inputs: ClassVar[list[str]] = []
+    outputs: ClassVar[list[str]] = []
+    input_contracts:  ClassVar[dict[str, object]] = {}
+    output_contracts: ClassVar[dict[str, object]] = {}
 
     @abstractmethod
     def run(self, context: dict) -> dict:
