@@ -105,6 +105,7 @@ precision = 2
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+src = ["src"]
 
 [tool.ruff.lint]
 select = [
@@ -115,3 +116,6 @@ select = [
     "UP",  # modern Python upgrades
     "SIM", # simplifications (often removes subtle mistakes)
 ]
+
+[tool.ruff.lint.isort]
+known-first-party = ["adapt"]
