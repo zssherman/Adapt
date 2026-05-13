@@ -1,4 +1,4 @@
-name: Build and Upload Adapt Release to PyPI
+name: Release to PyPI
 on:
   release:
     types:
