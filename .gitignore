@@ -99,4 +99,5 @@ data/
 # ignore hidden files but not gitignore
 .*
 !.gitignore
+!.importlinter
 __pycache__/
