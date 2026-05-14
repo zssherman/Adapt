@@ -1,6 +1,7 @@
 """Test config resolution and validation with Pydantic."""
 
 import pytest
+from pydantic import ValidationError
 
 from adapt.configuration.schemas.cli import CLIConfig
 from adapt.configuration.schemas.param import ParamConfig
@@ -184,9 +185,7 @@ class TestEdgeCases:
 
     def test_incomplete_param_config_dict_rejected(self):
         """Incomplete dict raises validation error."""
-        with pytest.raises(
-            Exception
-        ):  # noqa: B017 — Pydantic ValidationError or TypeError
+        with pytest.raises(ValidationError):
             resolve_config({"incomplete": "dict"}, None, None)
 
     def test_internal_config_is_complete(self):

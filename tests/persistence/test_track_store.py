@@ -534,9 +534,7 @@ def test_unique_constraint_rejects_duplicate_cell_label_per_scan(store):
     )
 
     # Writing same cell_label with different cell_uid should raise on unique(cell_label)
-    with pytest.raises(
-        Exception
-    ):  # noqa: B017 — sqlite3.IntegrityError on unique constraint
+    with pytest.raises(sqlite3.IntegrityError):
         store.write_scan(
             "r1",
             t,
