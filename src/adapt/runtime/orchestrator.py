@@ -23,7 +23,7 @@ from adapt.runtime.file_tracker import FileProcessingTracker
 from adapt.runtime.processor import RadarProcessor
 
 if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
+    from adapt.configuration.schemas.internal import InternalConfig
 
 __all__ = ["PipelineOrchestrator"]
 
@@ -116,17 +116,18 @@ class PipelineOrchestrator:
         self.max_queue_size = max_queue_size
 
         # Queue for downloader -> processor communication
-        self.downloader_queue = queue.Queue(maxsize=max_queue_size)
+        self.downloader_queue: queue.Queue[object] = queue.Queue(maxsize=max_queue_size)
 
         # Extract output_dirs from validated config
+        assert config.output_dirs is not None
         self.output_dirs = {k: Path(v) for k, v in config.output_dirs.items()}
 
         # Threads (created in start())
-        self.downloader = None
-        self.processor = None
+        self.downloader: AwsNexradDownloader | None = None
+        self.processor: RadarProcessor | None = None
 
         # File tracking (initialized in _setup_logging)
-        self.tracker = None
+        self.tracker: FileProcessingTracker | None = None
 
         # DataRepository (initialized in start()) - use run_id from config or generate
         self.run_id = config.run_id
@@ -135,8 +136,8 @@ class PipelineOrchestrator:
         # Lifecycle state
         self._stop_event = False
         self._interrupted = False  # Track user interrupt (Ctrl+C) vs normal completion
-        self._start_time = None
-        self._max_duration = None
+        self._start_time: float | None = None
+        self._max_duration: float | None = None
         self._close_repository_on_stop = close_repository_on_stop
 
     def _setup_logging(self):
@@ -234,6 +235,7 @@ class PipelineOrchestrator:
 
         # Initialize DataRepository
         radar = self.config.downloader.radar
+        assert self.run_id is not None
         self.repository = DataRepository(
             run_id=self.run_id,
             base_dir=self.output_dirs["base"],
@@ -283,6 +285,9 @@ class PipelineOrchestrator:
 
     def _main_loop(self, mode: str):
         """Monitoring loop: check exit conditions and log status."""
+        assert self.downloader is not None
+        assert self.processor is not None
+        assert self._start_time is not None
         last_status_time = time.time()
 
         while True:
@@ -328,6 +333,7 @@ class PipelineOrchestrator:
 
     def _check_historical_complete(self) -> bool:
         """Check if historical mode is complete. Returns True to exit."""
+        assert self.downloader is not None
         downloader_complete = self.downloader.is_historical_complete()
 
         if not downloader_complete:

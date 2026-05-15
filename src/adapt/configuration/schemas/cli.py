@@ -9,7 +9,7 @@ between runs: mode, radar ID, output paths, verbosity.
 This schema handles command-line arguments parsed by argparse.
 """
 
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import Field, model_validator
 
@@ -66,7 +66,7 @@ class CLIConfig(AdaptBaseModel):
         make this decision.
         """
         if self.mode is None and (self.start_time or self.end_time):
-            self.mode = "historical"
+            self.mode = cast(Literal["realtime", "historical"], "historical")
 
         return self
 
@@ -78,7 +78,7 @@ class CLIConfig(AdaptBaseModel):
         dict
             Nested dictionary matching InternalConfig structure
         """
-        overrides = {}
+        overrides: dict[str, Any] = {}
 
         if self.mode is not None:
             overrides["mode"] = self.mode
@@ -86,7 +86,7 @@ class CLIConfig(AdaptBaseModel):
         if self.base_dir is not None:
             overrides["base_dir"] = str(self.base_dir)
 
-        downloader_overrides = {}
+        downloader_overrides: dict[str, Any] = {}
         if self.radar is not None:
             downloader_overrides["radar"] = self.radar
         if self.start_time is not None:

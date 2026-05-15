@@ -68,8 +68,8 @@ class AwsNexradDownloader(threading.Thread):
     def __init__(
         self,
         config,
-        output_dir: Path = None,
-        output_dirs: dict = None,
+        output_dir: Path | None = None,
+        output_dirs: dict | None = None,
         result_queue=None,
         file_tracker=None,
         conn=None,
@@ -138,7 +138,7 @@ class AwsNexradDownloader(threading.Thread):
         self._sleep = sleeper or time.sleep
 
         self._stop_event = threading.Event()
-        self._known_files = set()
+        self._known_files: set[Path] = set()
         self._known_files_lock = threading.Lock()
         self._min_file_size = config.downloader.min_file_size
         self._last_availability_warning: tuple[object, object] | None = None
@@ -539,7 +539,7 @@ class AwsNexradDownloader(threading.Thread):
 
             # Download to temp then move
             # Use output_dirs["base"] if available, otherwise output_dir
-            base_dir = self.output_dirs["base"] if self.output_dirs else self.output_dir
+            base_dir: Path = self.output_dirs["base"] if self.output_dirs else self.output_dir  # type: ignore[assignment]
             temp_dir = base_dir / "_temp"
             temp_dir.mkdir(exist_ok=True)
 
@@ -563,7 +563,7 @@ class AwsNexradDownloader(threading.Thread):
         path: Path,
         scan_time: datetime,
         is_new: bool,
-        download_seconds: float = None,
+        download_seconds: float | None = None,
     ):
         """Put file notification in result queue."""
         # Keep the original behavior: if there is no result_queue, we don't

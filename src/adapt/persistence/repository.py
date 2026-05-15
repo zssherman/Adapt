@@ -32,7 +32,7 @@ from adapt.persistence.catalog import RadarCatalog
 from adapt.persistence.registry import RepositoryRegistry
 
 if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
+    from adapt.configuration.schemas.internal import InternalConfig
 
 __all__ = ["DataRepository", "ProductType"]
 
@@ -741,7 +741,7 @@ class DataRepository:
 
         item_id = str(uuid.uuid4())[:16]
 
-        item_id = self.catalog.register_item(
+        self.catalog.register_item(
             item_id=item_id,
             run_id=self.run_id,
             item_type="analysis2d",

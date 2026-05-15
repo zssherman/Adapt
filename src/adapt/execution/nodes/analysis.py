@@ -40,7 +40,7 @@ class AnalysisModule(BaseModule):
     }
 
     def __init__(self) -> None:
-        self._analyzer = None
+        self._analyzer: RadarCellAnalyzer | None = None
 
     def run(self, context: dict) -> dict:
         config = context["analysis_config"]

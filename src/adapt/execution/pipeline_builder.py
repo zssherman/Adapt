@@ -29,7 +29,7 @@ from adapt.execution.graph.executor import GraphExecutor
 from adapt.execution.module_registry import registry
 
 if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
+    from adapt.configuration.schemas.internal import InternalConfig
     from adapt.persistence.repository import DataRepository
 
 logger = logging.getLogger(__name__)

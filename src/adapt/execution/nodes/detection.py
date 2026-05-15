@@ -35,7 +35,7 @@ class DetectModule(BaseModule):
     output_contracts = {"segmented_ds": check_segmented_ds}
 
     def __init__(self) -> None:
-        self._segmenter = None
+        self._segmenter: RadarCellSegmenter | None = None
 
     def run(self, context: dict) -> dict:
         config = context["detection_config"]

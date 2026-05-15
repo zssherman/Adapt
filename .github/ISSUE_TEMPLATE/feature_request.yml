@@ -15,6 +15,7 @@ body:
       label: Area
       description: Which part of Adapt does this affect?
       options:
+        - Architecture and Design
         - Acquisition — data download or queuing
         - Ingest — file reading or regridding
         - Detection — segmentation or cell labelling
@@ -26,6 +27,7 @@ body:
         - CLI — commands or output
         - Dashboard — display or interaction
         - New module or data source
+        - CI/CD — testing, linting, or deployment
         - Other / cross-cutting
     validations:
       required: true

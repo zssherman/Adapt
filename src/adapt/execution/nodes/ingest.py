@@ -45,7 +45,7 @@ class LoadModule(BaseModule):
     output_contracts = {"grid_ds_2d": check_grid_ds_2d}
 
     def __init__(self) -> None:
-        self._loader = None
+        self._loader: RadarDataLoader | None = None
 
     def run(self, context: dict) -> dict:
         config = context["ingest_config"]

@@ -260,7 +260,7 @@ def init_runtime_config(args) -> InternalConfig:
         user_cfg_dict = _load_user_config_dict(config_path)
         user_cfg = UserConfig.model_validate(user_cfg_dict)
     else:
-        user_cfg = UserConfig()  # use param defaults only
+        user_cfg = UserConfig()  # type: ignore[call-arg]  # all fields optional
 
     # Create CLI config from args
     cli_args = {

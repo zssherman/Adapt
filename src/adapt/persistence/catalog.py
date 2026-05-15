@@ -21,6 +21,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -180,7 +181,7 @@ class RadarCatalog:
         item_id: str,
         run_id: str,
         item_type: str,
-        scan_time: str,
+        scan_time: str | None,
         file_path: str,
         processing_stage: str = "complete",
         status: str = "complete",
@@ -618,7 +619,7 @@ class RadarCatalog:
         with self._lock:
             # Build update query
             updates = [f"{column} = ?"]
-            params = [item_id]
+            params: list[Any] = [item_id]
 
             if num_cells is not None:
                 updates.append("num_cells = ?")

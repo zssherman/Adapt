@@ -11,7 +11,7 @@ to override from the expert defaults. Validation is lenient to accept
 both uppercase and lowercase keys, integers where floats are expected, etc.
 """
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import Field, field_validator, model_validator
 
@@ -197,7 +197,7 @@ class UserConfig(AdaptBaseModel):
                 and (self.downloader.start_time and self.downloader.end_time)
             )
         ):
-            self.mode = "historical"
+            self.mode = cast(Literal["realtime", "historical"], "historical")
 
         return self
 
@@ -225,7 +225,7 @@ class UserConfig(AdaptBaseModel):
         dict
             Nested dictionary matching InternalConfig structure
         """
-        overrides = {}
+        overrides: dict[str, Any] = {}
 
         if self.mode is not None:
             overrides["mode"] = self.mode
@@ -234,7 +234,7 @@ class UserConfig(AdaptBaseModel):
             overrides["base_dir"] = str(self.base_dir)
 
         # Downloader section
-        downloader = {}
+        downloader: dict[str, Any] = {}
         if self.radar is not None:
             downloader["radar"] = self.radar
         if self.start_time is not None:
@@ -261,7 +261,7 @@ class UserConfig(AdaptBaseModel):
             overrides["downloader"] = downloader
 
         # Regridder section
-        regridder = {}
+        regridder: dict[str, Any] = {}
         if self.grid_shape is not None:
             regridder["grid_shape"] = self.grid_shape
         if self.grid_limits is not None:
@@ -275,7 +275,7 @@ class UserConfig(AdaptBaseModel):
             overrides["regridder"] = regridder
 
         # Segmenter section
-        segmenter = {}
+        segmenter: dict[str, Any] = {}
         if self.segmentation_method is not None:
             segmenter["method"] = self.segmentation_method
         if self.threshold is not None:
@@ -293,12 +293,12 @@ class UserConfig(AdaptBaseModel):
             overrides["segmenter"] = segmenter
 
         # Global section
-        global_cfg = {}
+        global_cfg: dict[str, Any] = {}
         if self.z_level is not None:
             global_cfg["z_level"] = self.z_level
 
         if self.reflectivity_var is not None:
-            var_names = global_cfg.get("var_names", {})
+            var_names: dict[str, str] = global_cfg.get("var_names", {})
             var_names["reflectivity"] = self.reflectivity_var
             global_cfg["var_names"] = var_names
 
@@ -310,7 +310,7 @@ class UserConfig(AdaptBaseModel):
             overrides["global"] = global_cfg
 
         # Projector section
-        projector = {}
+        projector: dict[str, Any] = {}
         if self.projection_method is not None:
             projector["method"] = self.projection_method
         if self.max_projection_steps is not None:
@@ -324,7 +324,7 @@ class UserConfig(AdaptBaseModel):
             overrides["projector"] = projector
 
         # Analyzer section
-        analyzer = {}
+        analyzer: dict[str, Any] = {}
         if self.radar_variables is not None:
             analyzer["radar_variables"] = self.radar_variables
         if self.exclude_fields is not None:

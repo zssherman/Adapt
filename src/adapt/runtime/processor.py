@@ -40,7 +40,7 @@ from adapt.persistence.track_store import TrackStore
 from adapt.persistence.writer import RepositoryWriter
 
 if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
+    from adapt.configuration.schemas.internal import InternalConfig
 
 __all__ = ["RadarProcessor"]
 
@@ -122,7 +122,7 @@ class RadarProcessor(threading.Thread):
         )
 
         # Frame pairing orchestration state
-        self._segmented_history = []  # list of (filepath, ds_2d, scan_time)
+        self._segmented_history: list[tuple[str, object, datetime | None]] = []
         self._max_history = config.processor.max_history
         self._max_time_gap_minutes = config.projector.max_time_interval_minutes
         self._last_skipped = False
@@ -337,6 +337,7 @@ class RadarProcessor(threading.Thread):
 
     def _save_analysis_netcdf(self, ds, filepath: str, scan_time) -> str | None:
         """Write the analysis dataset to a NetCDF artifact in the repository."""
+        assert self.repository is not None
         try:
             radar = self.config.downloader.radar
             filename_stem = Path(filepath).stem
@@ -370,6 +371,7 @@ class RadarProcessor(threading.Thread):
 
     def _save_results(self, result: dict, scan_time):
         """Save all pipeline outputs to the repository."""
+        assert self.repository is not None
         if scan_time is not None and scan_time.tzinfo is None:
             scan_time = scan_time.replace(tzinfo=UTC)
 
@@ -420,7 +422,7 @@ class RadarProcessor(threading.Thread):
         """Cell stats are in the repository; use DataClient to query them."""
         return pd.DataFrame()
 
-    def save_results(self, filepath: str = None):
+    def save_results(self, filepath: str | None = None):
         """No-op: processor writes results to repository in _save_results."""
         pass
 

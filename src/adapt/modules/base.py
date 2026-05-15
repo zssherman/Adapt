@@ -11,7 +11,8 @@ Contract functions come from adapt.contracts — import them there, not here.
 """
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 
 class BaseModule(ABC):
@@ -49,8 +50,8 @@ class BaseModule(ABC):
     name: ClassVar[str] = ""
     inputs: ClassVar[list[str]] = []
     outputs: ClassVar[list[str]] = []
-    input_contracts: ClassVar[dict[str, object]] = {}
-    output_contracts: ClassVar[dict[str, object]] = {}
+    input_contracts: ClassVar[dict[str, Callable[[Any], None]]] = {}
+    output_contracts: ClassVar[dict[str, Callable[[Any], None]]] = {}
 
     @abstractmethod
     def run(self, context: dict) -> dict:

@@ -19,6 +19,7 @@ Author: Bhupendra Raut
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import pyart
 import xarray as xr
@@ -158,10 +159,10 @@ class RadarDataLoader:
 
     def regrid(
         self,
-        radar: object,
-        grid_kwargs: dict = None,
-        output_dir: str = None,
-        source_filepath: str = None,
+        radar: Any,
+        grid_kwargs: dict | None = None,
+        output_dir: str | None = None,
+        source_filepath: str | None = None,
     ) -> xr.Dataset | None:
         """Transform a Py-ART Radar object from polar to Cartesian grid.
 
@@ -279,9 +280,9 @@ class RadarDataLoader:
     def load_and_regrid(
         self,
         filepath: Path | str,
-        grid_kwargs: dict = None,
+        grid_kwargs: dict | None = None,
         save_netcdf: bool = True,
-        output_dir: str = None,
+        output_dir: str | None = None,
     ) -> xr.Dataset | None:
         """Read and regrid a NEXRAD file in one call (convenience method).
 
@@ -338,7 +339,7 @@ class RadarDataLoader:
             radar,
             grid_kwargs=grid_kwargs,
             output_dir=output_dir if save_netcdf else None,
-            source_filepath=filepath,
+            source_filepath=str(filepath),
         )
         return ds
 

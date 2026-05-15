@@ -188,6 +188,7 @@ def _run_nexrad(args: argparse.Namespace) -> None:
         from adapt.visualization.plotter import PlotConsumer
 
         radar = args.radar or config.downloader.radar
+        assert config.output_dirs is not None
         plot_output_dir = Path(config.output_dirs["base"]) / radar / "plots"
         plot_consumer = PlotConsumer(
             repository=orchestrator.repository,
@@ -318,6 +319,7 @@ def _config_cmd(args: argparse.Namespace) -> None:
                 "Current working directory no longer exists. "
                 "Run `cd` into an existing directory, or pass an absolute output path."
             )
+        assert cwd is not None
         out = cwd / "config.yaml"
 
     if out.is_dir():

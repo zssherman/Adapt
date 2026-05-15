@@ -9,7 +9,6 @@ from storage implementation details.
 """
 
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -52,18 +51,20 @@ class RepositoryWriter:
     def write_netcdf(
         self,
         ds: "xr.Dataset",
-        path: Path,
+        product_type: str,
         scan_time: datetime,
         producer: str,
         parent_ids: list[str] | None = None,
         metadata: dict | None = None,
+        filename_stem: str | None = None,
     ) -> str:
         """Persist an xarray Dataset as a NetCDF artifact. Returns artifact ID."""
         return self.repository.write_netcdf(
             ds=ds,
-            path=path,
+            product_type=product_type,
             scan_time=scan_time,
             producer=producer,
             parent_ids=parent_ids or [],
             metadata=metadata or {},
+            filename_stem=filename_stem,
         )

@@ -42,7 +42,7 @@ class TrackingModule(BaseModule):
     }
 
     def __init__(self) -> None:
-        self._tracker = None
+        self._tracker: RadarCellTracker | None = None
 
     def run(self, context: dict) -> dict:
         config = context["tracking_config"]

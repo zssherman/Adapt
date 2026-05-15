@@ -67,9 +67,9 @@ def setup_output_directories(base_dir: str) -> dict[str, Path]:
 def get_plot_path(
     output_dirs: dict[str, Path],
     radar: str,
-    plot_type: str = None,
-    scan_time: datetime = None,
-    filename: str = None,
+    plot_type: str | None = None,
+    scan_time: datetime | None = None,
+    filename: str | None = None,
 ) -> Path:
     """Get path for plot/visualization file.
 

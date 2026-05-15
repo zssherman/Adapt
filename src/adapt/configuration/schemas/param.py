@@ -99,8 +99,8 @@ class GlobalConfig(AdaptBaseModel):
     """Global pipeline settings."""
 
     z_level: float = Field(2000.0, description="Analysis altitude in meters")
-    var_names: VarNamesConfig = Field(default_factory=VarNamesConfig)
-    coord_names: CoordNamesConfig = Field(default_factory=CoordNamesConfig)
+    var_names: VarNamesConfig = Field(default_factory=VarNamesConfig)  # type: ignore[arg-type]
+    coord_names: CoordNamesConfig = Field(default_factory=CoordNamesConfig)  # type: ignore[arg-type]
 
     @field_validator("z_level", mode="before")
     @classmethod
@@ -128,7 +128,7 @@ class ProjectorConfig(AdaptBaseModel):
     max_time_interval_minutes: int = Field(30, ge=1)
     max_projection_steps: int = Field(3, ge=1, le=10)
     nan_fill_value: float = 0.0
-    flow_params: FlowParamsConfig = Field(default_factory=FlowParamsConfig)
+    flow_params: FlowParamsConfig = Field(default_factory=FlowParamsConfig)  # type: ignore[arg-type]
     min_motion_threshold: float = Field(0.5, ge=0)
     max_flow_magnitude: float = Field(
         20.0,
@@ -216,7 +216,7 @@ class TrackerConfig(AdaptBaseModel):
     core_reflectivity_threshold: float = Field(
         40.0, ge=0.0, description="Reflectivity threshold for core area (dBZ)"
     )
-    cell_uid: CellUidConfig = Field(default_factory=CellUidConfig)
+    cell_uid: CellUidConfig = Field(default_factory=CellUidConfig)  # type: ignore[arg-type]
 
 
 class VisualizationConfig(AdaptBaseModel):
@@ -272,17 +272,17 @@ class ParamConfig(AdaptBaseModel):
     """
 
     mode: Literal["realtime", "historical"] = "realtime"
-    reader: ReaderConfig = Field(default_factory=ReaderConfig)
-    downloader: DownloaderConfig = Field(default_factory=DownloaderConfig)
-    regridder: RegridderConfig = Field(default_factory=RegridderConfig)
-    segmenter: SegmenterConfig = Field(default_factory=SegmenterConfig)
-    global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
-    projector: ProjectorConfig = Field(default_factory=ProjectorConfig)
-    analyzer: AnalyzerConfig = Field(default_factory=AnalyzerConfig)
-    tracker: TrackerConfig = Field(default_factory=TrackerConfig)
-    visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
-    output: OutputConfig = Field(default_factory=OutputConfig)
-    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    reader: ReaderConfig = Field(default_factory=ReaderConfig)  # type: ignore[arg-type]
+    downloader: DownloaderConfig = Field(default_factory=DownloaderConfig)  # type: ignore[arg-type]
+    regridder: RegridderConfig = Field(default_factory=RegridderConfig)  # type: ignore[arg-type]
+    segmenter: SegmenterConfig = Field(default_factory=SegmenterConfig)  # type: ignore[arg-type]
+    global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")  # type: ignore[arg-type]
+    projector: ProjectorConfig = Field(default_factory=ProjectorConfig)  # type: ignore[arg-type]
+    analyzer: AnalyzerConfig = Field(default_factory=AnalyzerConfig)  # type: ignore[arg-type]
+    tracker: TrackerConfig = Field(default_factory=TrackerConfig)  # type: ignore[arg-type]
+    visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)  # type: ignore[arg-type]
+    output: OutputConfig = Field(default_factory=OutputConfig)  # type: ignore[arg-type]
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)  # type: ignore[arg-type]
 
     model_config = AdaptBaseModel.model_config.copy()
     model_config.update({"populate_by_name": True})  # Allow both 'global' and 'global_'

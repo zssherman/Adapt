@@ -144,7 +144,7 @@ class RadarCellAnalyzer:
         self.max_projection_steps = config.max_projection_steps
         self._adjacency_min_touching = config.adjacency_min_touching
 
-    def extract(self, ds: xr.Dataset, z_level: int = None) -> pd.DataFrame:
+    def extract(self, ds: xr.Dataset, z_level: int | None = None) -> pd.DataFrame:
         """Extract geometric and statistical properties from all labeled cells.
 
         Computes per-cell statistics including centroids (geometric, mass-weighted,

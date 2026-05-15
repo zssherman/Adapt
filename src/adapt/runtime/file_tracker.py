@@ -13,6 +13,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 __all__ = ["FileProcessingTracker"]
 
@@ -88,7 +89,7 @@ class FileProcessingTracker:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._conn = None
+        self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
 
         # Initialize database
@@ -317,7 +318,7 @@ class FileProcessingTracker:
                 "error_message = ?",
                 "updated_at = ?",
             ]
-            values = [
+            values: list[Any] = [
                 now,
                 str(path) if path else None,
                 new_status,
@@ -432,7 +433,7 @@ class FileProcessingTracker:
             condition = "status != 'completed' AND status != 'failed'"
 
         query = f"SELECT * FROM radar_file_processing WHERE {condition}"
-        params = []
+        params: list[Any] = []
 
         if radar:
             query += " AND radar = ?"

@@ -522,7 +522,8 @@ class DataClient:
         parquet_types = [
             it
             for it in self.item_types()
-            if self.registry.get_item_type_info(it)["storage_format"] == "parquet"
+            if (info := self.registry.get_item_type_info(it)) is not None
+            and info["storage_format"] == "parquet"
         ]
 
         # Create views for each Parquet type
@@ -1117,7 +1118,7 @@ class DataClient:
             FROM items
             WHERE item_type = 'segmentation2d' AND status = 'complete'
         """
-        params = []
+        params: list[Any] = []
 
         if start_time:
             query += " AND scan_time >= ?"

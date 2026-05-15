@@ -37,7 +37,7 @@ class ProjectionModule(BaseModule):
     output_contracts = {"projected_ds": check_projected_ds}
 
     def __init__(self) -> None:
-        self._projector = None
+        self._projector: RadarCellProjector | None = None
 
     def run(self, context: dict) -> dict:
         config = context["projection_config"]

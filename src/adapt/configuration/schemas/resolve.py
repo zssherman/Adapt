@@ -139,7 +139,7 @@ def resolve_config(
         param = param_cfg
 
     if user_cfg is None or (isinstance(user_cfg, dict) and not user_cfg):
-        user = UserConfig()
+        user = UserConfig()  # type: ignore[call-arg]
     elif not isinstance(user_cfg, UserConfig):
         user = UserConfig.model_validate(user_cfg)
     else:
