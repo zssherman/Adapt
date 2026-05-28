@@ -1,7 +1,8 @@
 # Copyright © 2026, UChicago Argonne, LLC
 # See LICENSE for terms and disclaimer.
 
-"""Estimate cell motion and project future positions using optical flow.
+"""Lagrangian persistence: Estimate cell motion and project future positions using optical flow. The lagrangian extrapolation produces advection of the latest refelctivity field and evolution of advection field is not taken into account.
+
 
 This module computes cell motion vectors from radar reflectivity patterns
 using optical flow (Farneback algorithm). Motion vectors are then used to
