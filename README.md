@@ -8,6 +8,10 @@
   <strong>Adapt is under active development</strong>
 </p>
 
+
+> [!IMPORTANT]
+> We are not accepting external Pull Requests at this time. Contribution guidelines will be published after our stable release.
+
 <p align="center">
   Components are continuously being redesigned, validated, stress-tested, and integrated for real-time adaptive radar operations.
 </p>
@@ -90,10 +94,12 @@ adapt --help
 
 ```bash
 adapt run-nexrad --radar KLOT --base-dir ~/adapt_output
-adapt dashboard --repo ~/adapt_output
 ```
 
-Open the dashboard in a second terminal for live viewing.
+and then open the dashboard in a second terminal for live viewing.
+```bash
+adapt dashboard --repo ~/adapt_output
+```
 
 ---
 
