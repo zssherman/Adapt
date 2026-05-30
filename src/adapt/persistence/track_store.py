@@ -211,6 +211,8 @@ class TrackStore:
             )
 
             conn.commit()
+            # Checkpoint WAL so readonly readers using immutable=1 see current data.
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
     # ------------------------------------------------------------------
     # Read

@@ -1061,7 +1061,12 @@ class AdaptDashboard(tk.Tk):
                 if self._canvas_refs is not None:
                     try:
                         self._load_cells_data(repo, radar)
-                        self._redraw(xr.open_dataset(latest))
+                        _ds = xr.open_dataset(latest)
+                        try:
+                            self._redraw(_ds)
+                        except Exception:
+                            _ds.close()
+                            raise
                         self._last_rendered_nc = latest
                         self.scan_var.set(labels[-1] if labels else "")
                         db_path_r = Path(repo) / radar / "catalog.db"
@@ -1115,13 +1120,13 @@ class AdaptDashboard(tk.Tk):
 
         # Collect NC files from all date subdirectories
         all_nc = []
-        for date_dir in analysis_dir.iterdir():
+        for date_dir in list(analysis_dir.iterdir()):  # eager: release FD immediately
             if (
                 date_dir.is_dir()
                 and len(date_dir.name) == 8
                 and date_dir.name.isdigit()
             ):
-                all_nc.extend(date_dir.glob("*_analysis.nc"))
+                all_nc.extend(list(date_dir.glob("*_analysis.nc")))  # eager
 
         # Sort by filename (contains timestamp)
         return sorted(all_nc, key=lambda p: p.name)
@@ -1311,7 +1316,12 @@ class AdaptDashboard(tk.Tk):
         self._nc_loop_index += 1
         if self._canvas_refs is not None:
             self._clear_time_series()
-            self._redraw(xr.open_dataset(path))
+            _ds = xr.open_dataset(path)
+            try:
+                self._redraw(_ds)
+            except Exception:
+                _ds.close()
+                raise
         else:
             self._render_nc(path)
         dt = max(100, self._loop_dt_var.get())
@@ -1491,7 +1501,11 @@ class AdaptDashboard(tk.Tk):
         )
 
         if self._cbar_ax is not None:
-            self._cbar_ax.cla()
+            # Reset the axes locator before each colorbar creation. cla() leaves
+            # _axes_locator intact; each new colorbar wraps the previous locator
+            # in _ColorbarAxesLocator, building a chain that causes RecursionError
+            # after ~1000 redraws.
+            self._cbar_ax.set_axes_locator(None)
             self._colorbar = fig.colorbar(im_ov, cax=self._cbar_ax, label=unit)
         else:
             self._colorbar = fig.colorbar(

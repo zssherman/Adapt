@@ -105,6 +105,8 @@ class RadarCatalog:
         with self._lock:
             conn.executescript(schema_sql)
             conn.commit()
+            # Checkpoint WAL so readonly readers (immutable=1) see the schema.
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
         logger.debug(f"Radar catalog schema initialized from {schema_path}")
 
@@ -171,6 +173,8 @@ class RadarCatalog:
             """)
 
             conn.commit()
+            # Checkpoint WAL so readonly readers (immutable=1) see the schema.
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
     # =========================================================================
     # Item Management

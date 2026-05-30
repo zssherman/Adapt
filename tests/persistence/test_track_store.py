@@ -651,3 +651,54 @@ def test_trackstore_readonly_flag_accepted_by_constructor(tmp_path):
     conn = ts._connect()
     assert conn is not None
     ts.close()
+
+
+# ---------------------------------------------------------------------------
+# WAL visibility — Bug: immutable=1 skips uncheckpointed WAL data
+# ---------------------------------------------------------------------------
+
+
+def test_readonly_trackstore_sees_schema_after_fresh_catalog_init(tmp_path):
+    """After RadarCatalog creates a fresh catalog.db, TrackStore(readonly=True)
+    must connect without RuntimeError. Fails if tables live only in WAL and the
+    readonly connection opens with immutable=1 (which bypasses WAL)."""
+    from adapt.persistence.catalog import RadarCatalog
+
+    radar_dir = tmp_path / "KHTX"
+    radar_dir.mkdir()
+    RadarCatalog(radar_dir)  # creates catalog.db + schema in WAL
+
+    ts = TrackStore(radar_dir / "catalog.db", readonly=True)
+    conn = ts._connect()  # must not raise RuntimeError: Missing required tracking tables
+    assert conn is not None
+    ts.close()
+
+
+def test_readonly_trackstore_sees_written_data_with_catalog_open(tmp_path):
+    """Data written by write_scan must be visible to a new readonly TrackStore
+    while the originating RadarCatalog connection remains open.
+    Fails if PASSIVE checkpoint in write_scan is blocked by the catalog connection."""
+    from adapt.persistence.catalog import RadarCatalog
+
+    radar_dir = tmp_path / "KHTX"
+    radar_dir.mkdir()
+    _catalog = RadarCatalog(radar_dir)  # holds _conn open for its lifetime
+    db_path = radar_dir / "catalog.db"
+
+    writer = TrackStore(db_path)
+    writer.write_scan(
+        "r1",
+        _t("2024-01-01T12:00:00"),
+        _cell_stats(1),
+        _tracked_cells(1, "UID1"),
+        pd.DataFrame(),
+        _empty_cell_adjacency(),
+    )
+    writer.close()
+
+    reader = TrackStore(db_path, readonly=True)
+    count = reader._connect().execute(
+        "SELECT count(*) FROM cells_by_scan"
+    ).fetchone()[0]
+    reader.close()
+    assert count == 1
