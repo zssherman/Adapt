@@ -59,6 +59,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "import-linter>=2.0",
+    "pre-commit>=4.0",
 ]
 docs = [
     "sphinx>=7.0",
