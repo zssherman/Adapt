@@ -635,7 +635,7 @@ class RadarPlotter:
             try:
                 seg_ds = xr.open_dataset(segmentation_nc)
                 break
-            except (OSError, FileNotFoundError, RuntimeError) as e:
+            except (OSError, FileNotFoundError, RuntimeError, ValueError) as e:
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                 else:
