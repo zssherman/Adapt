@@ -200,10 +200,13 @@ _VAR_LABELS = {
 
 
 # ── Compact toolbar: no Back/Forward; shows x y lat lon in coordinate bar ────
+_CompactToolbar: type | None = None
 if HAS_MPL:
 
-    class _CompactToolbar(NavigationToolbar2Tk):
-        toolitems = [t for t in NavigationToolbar2Tk.toolitems if t[0] not in ("Back", "Forward")]
+    class _CompactToolbarCls(NavigationToolbar2Tk):
+        toolitems: tuple = tuple(
+            t for t in NavigationToolbar2Tk.toolitems if t[0] not in ("Back", "Forward")
+        )
 
         def __init__(self, canvas, window, *, pack_toolbar=True, lat0=0.0, lon0=0.0):
             self._ltrans = None
@@ -232,8 +235,7 @@ if HAS_MPL:
                     logger.exception("Failed to update toolbar coordinate message")
             super().set_message(s)
 
-else:
-    _CompactToolbar = None
+    _CompactToolbar = _CompactToolbarCls
 
 
 # ── Range slider widget ───────────────────────────────────────────────────────
@@ -364,7 +366,7 @@ def _list_radars(repo: Path) -> list:
     )
 
 
-def _list_runs(repo: Path, radar: str = None) -> list:
+def _list_runs(repo: Path, radar: str | None = None) -> list:
     """Return runs from database registry.
 
     Uses DataClient API to query adapt_registry.db for runs.
@@ -421,7 +423,7 @@ def _list_runs(repo: Path, radar: str = None) -> list:
 
 
 class AdaptDashboard(tk.Tk):
-    def __init__(self, repo: str = None):
+    def __init__(self, repo: str | None = None):
         super().__init__()
         self.title("Adapt Radar Dashboard")
         self.geometry("1400x900")
@@ -431,18 +433,18 @@ class AdaptDashboard(tk.Tk):
         self._radar = tk.StringVar(value="")
         self._run_sel = tk.StringVar(value="")
         self._proc = None
-        self._log_lines = []
+        self._log_lines: list[str] = []
         self._today = datetime.now().strftime("%Y%m%d")
         self._last_n_plots = -1
         self._canvas_refs = None  # (canvas, fig, toolbar, bottom)
         self._refresh_active = True
 
         # Inline render state
-        self._current_nc_ds = None  # loaded xarray Dataset
+        self._current_nc_ds: xr.Dataset | None = None  # loaded xarray Dataset
         self._current_cell_df = None  # cells_by_scan DataFrame (SQLite) or parquet fallback
         self._current_run_id = None  # run_id for the loaded cell data
         self._current_scan_ts = None  # pd.Timestamp of current displayed scan
-        self._cell_contours = {}  # cell_id -> contour set on radar ax
+        self._cell_contours: dict[int, object] = {}  # cell_id -> contour set on radar ax
         self._hover_canvas = None  # ref to mpl canvas for hover
 
         # Track click overlay state
@@ -457,7 +459,7 @@ class AdaptDashboard(tk.Tk):
         # NC loop animation state (replaces PNG loop)
         self._nc_loop_running = False
         self._nc_loop_index = 0
-        self._nc_loop_files = []
+        self._nc_loop_files: list[str] = []
 
         # Pending after() IDs — cancelled on close to prevent post-destroy callbacks
         self._after_ids: list[str] = []
@@ -1713,6 +1715,8 @@ class AdaptDashboard(tk.Tk):
         if track_df.empty:
             return
         ds = self._current_nc_ds
+        if ds is None:
+            return
         x_km, y_km = _centroid_track_to_km(track_df, ds["x"].values, ds["y"].values)
         (line,) = ax.plot(x_km, y_km, "-", color="cyan", linewidth=1.5, alpha=0.85, zorder=10)
         dots = ax.scatter(x_km, y_km, s=18, color="cyan", zorder=11, alpha=0.9)
@@ -2220,7 +2224,7 @@ class AdaptDashboard(tk.Tk):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
-def main(repo: str = None):
+def main(repo: str | None = None):
     """Launch the Adapt Dashboard.
 
     Parameters

@@ -32,7 +32,7 @@ except ImportError:
     CONTEXTILY_AVAILABLE = False
 
 if TYPE_CHECKING:
-    from adapt.configuration.schemas import InternalConfig
+    from adapt.configuration.schemas.internal import InternalConfig
     from adapt.persistence import DataRepository
 
 __all__ = ["RadarPlotter", "PlotterThread", "PlotConsumer"]
@@ -85,7 +85,7 @@ class RadarPlotter:
         print(f"Plot saved to {plot_path}")
     """
 
-    def __init__(self, config: "InternalConfig" = None, show_plots: bool = False):
+    def __init__(self, config: "InternalConfig | None" = None, show_plots: bool = False):
         """Initialize plotter.
 
         Parameters
@@ -279,7 +279,7 @@ class RadarPlotter:
         refl: np.ma.MaskedArray,
         x_coords: np.ndarray,
         y_coords: np.ndarray,
-    ) -> matplotlib.image.AxesImage:
+    ) -> matplotlib.collections.QuadMesh:
         """Plot reflectivity pcolormesh."""
         return ax.pcolormesh(
             x_coords,
@@ -292,7 +292,7 @@ class RadarPlotter:
             zorder=1,
         )
 
-    def _add_colorbar(self, ax: plt.Axes, im: matplotlib.image.AxesImage) -> None:
+    def _add_colorbar(self, ax: plt.Axes, im: matplotlib.cm.ScalarMappable) -> None:
         """Add colorbar to axis."""
         plt.colorbar(im, ax=ax, label="Reflectivity (dBZ)", fraction=0.046, pad=0.04)
 
@@ -630,7 +630,7 @@ class RadarPlotter:
                 raise FileNotFoundError(f"File not found: {segmentation_nc}")
 
         # Try to open NetCDF
-        seg_ds = None
+        seg_ds: xr.Dataset | None = None
         for attempt in range(max_retries):
             try:
                 seg_ds = xr.open_dataset(segmentation_nc)
@@ -640,6 +640,8 @@ class RadarPlotter:
                     time.sleep(retry_delay * (attempt + 1))
                 else:
                     raise RuntimeError(f"Failed to open NetCDF: {segmentation_nc}") from e
+
+        assert seg_ds is not None  # loop raises on all retries; reaching here guarantees success
 
         # Validate required variables
         labels_name = self._get_var_name("cell_labels", "cell_labels")
@@ -709,7 +711,7 @@ class PlotterThread(threading.Thread):
         self,
         input_queue: queue.Queue,
         output_dirs: dict,
-        config: "InternalConfig" = None,
+        config: "InternalConfig | None" = None,
         file_tracker=None,
         show_plots: bool = False,
         name: str = "RadarPlotter",
@@ -878,7 +880,7 @@ class PlotConsumer(threading.Thread):
         repository: "DataRepository",
         stop_event: threading.Event,
         output_dir: Path,
-        config: "InternalConfig" = None,
+        config: "InternalConfig | None" = None,
         poll_interval: float = 2.0,
         show_live: bool = False,
         name: str = "PlotConsumer",
