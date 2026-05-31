@@ -39,9 +39,6 @@ dependencies = [
     "arm_pyart",
     "opencv-python",
     "nexradaws",
-    "cartopy>=0.21",
-    "contextily",
-    "pyproj",
     "pyarrow",
     "duckdb",
 ]
@@ -67,6 +64,10 @@ docs = [
     "pydata-sphinx-theme>=0.15",
     "sphinx-autodoc-typehints",
     "myst-parser>=2.0",
+]
+maps = [
+    "contextily",
+    "pyproj",
 ]
 
 [tool.setuptools]

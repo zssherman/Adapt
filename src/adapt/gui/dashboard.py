@@ -55,18 +55,6 @@ def _suppress_osx_stderr():
         os.close(saved)
 
 
-# ── PROJ data path fix (must be before contextily/rasterio) ──────────────────
-# Force-set PROJ paths to the active environment's proj.db.
-# Cannot use setdefault: PROJ_DATA may already point to a different conda env.
-try:
-    from pyproj.datadir import get_data_dir as _get_proj_data_dir
-
-    _pd = _get_proj_data_dir()
-    os.environ["PROJ_DATA"] = _pd
-    os.environ["PROJ_LIB"] = _pd
-except Exception:
-    logger.exception("Failed to configure PROJ environment variables")
-
 # ── Tkinter ───────────────────────────────────────────────────────────────────
 import tkinter as tk  # noqa: E402
 from tkinter import filedialog, messagebox, scrolledtext, ttk  # noqa: E402
