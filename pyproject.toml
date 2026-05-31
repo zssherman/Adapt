@@ -43,6 +43,7 @@ dependencies = [
     "contextily",
     "pyproj",
     "pyarrow",
+    "duckdb",
 ]
 
 [project.urls]
