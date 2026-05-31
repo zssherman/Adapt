@@ -156,6 +156,21 @@ _HV_KEYS = (
 )
 
 
+def _centroid_track_to_km(
+    history_df: "pd.DataFrame",
+    x_metres: "np.ndarray",
+    y_metres: "np.ndarray",
+) -> "tuple[np.ndarray, np.ndarray]":
+    """Convert pixel centroid history to (x_km, y_km) using dataset grid coordinates.
+
+    Uses stored integer pixel indices to index directly into the dataset's x/y
+    coordinate arrays, bypassing any lat/lon round-trip approximation.
+    """
+    cols = history_df["cell_centroid_mass_x"].values.astype(int)
+    rows = history_df["cell_centroid_mass_y"].values.astype(int)
+    return x_metres[cols] / 1000.0, y_metres[rows] / 1000.0
+
+
 def _cell_uid_disp(uid) -> str:
     try:
         import pandas as _pd
@@ -1690,25 +1705,18 @@ class AdaptDashboard(tk.Tk):
         df = history_df if history_df is not None else self._current_cell_df
         if df is None:
             return
-        lat_col, lon_col = "cell_centroid_mass_lat", "cell_centroid_mass_lon"
-        if lat_col not in df.columns:
+        if "cell_centroid_mass_x" not in df.columns:
             return
-        track_df = df.dropna(subset=[lat_col, lon_col]).sort_values("scan_time")
+        track_df = df.dropna(subset=["cell_centroid_mass_x", "cell_centroid_mass_y"]).sort_values(
+            "scan_time"
+        )
         if track_df.empty:
             return
         ds = self._current_nc_ds
-        lat0 = float(ds.attrs.get("radar_latitude", 0.0))
-        lon0 = float(ds.attrs.get("radar_longitude", 0.0))
-        R = 6371.0
-        lats = track_df[lat_col].values
-        lons = track_df[lon_col].values
-        y_km = (lats - lat0) * (np.pi / 180.0) * R
-        x_km = (lons - lon0) * (np.pi / 180.0) * R * np.cos(np.radians(lat0))
+        x_km, y_km = _centroid_track_to_km(track_df, ds["x"].values, ds["y"].values)
         (line,) = ax.plot(x_km, y_km, "-", color="cyan", linewidth=1.5, alpha=0.85, zorder=10)
         dots = ax.scatter(x_km, y_km, s=18, color="cyan", zorder=11, alpha=0.9)
-        cur = track_df.iloc[-1]
-        cy = float((cur[lat_col] - lat0) * np.pi / 180.0 * R)
-        cx = float((cur[lon_col] - lon0) * np.pi / 180.0 * R * np.cos(np.radians(lat0)))
+        cx, cy = float(x_km[-1]), float(y_km[-1])
         star = ax.scatter([cx], [cy], s=60, color="#8aff9c", marker="*", zorder=12)
         self._track_overlay = [line, dots, star]
 
