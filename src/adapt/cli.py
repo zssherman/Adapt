@@ -371,9 +371,29 @@ def _dashboard_cmd(args: argparse.Namespace) -> None:
         os.getcwd()
     except FileNotFoundError:
         os.chdir(os.path.expanduser("~"))
-    from adapt.gui import main
+    from adapt.consumers.live import main
 
     main(repo=args.repo)
+
+
+# ---------------------------------------------------------------------------
+# Sub-command: console  (scientific analysis workbench)
+# ---------------------------------------------------------------------------
+
+
+def _build_console_parser(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument(
+        "--workspace",
+        default=None,
+        help="Path to a Console workspace directory. Created if it does not exist.",
+    )
+
+
+def _console_cmd(args: argparse.Namespace) -> None:
+    """Launch the ADAPT Console analysis workbench."""
+    from adapt.consumers.console import main as console_main
+
+    console_main(workspace=args.workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +445,14 @@ def main() -> None:
     )
     _build_dashboard_parser(dashboard_parser)
     dashboard_parser.set_defaults(func=_dashboard_cmd)
+
+    console_parser = subparsers.add_parser(
+        "console",
+        help="Open the ADAPT Console analysis workbench (requires PySide6).",
+        description="Launch the ADAPT Console scientific analysis workbench.",
+    )
+    _build_console_parser(console_parser)
+    console_parser.set_defaults(func=_console_cmd)
 
     args = parser.parse_args()
     args.func(args)

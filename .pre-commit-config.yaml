@@ -24,7 +24,7 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-        args: [src/adapt, --no-error-summary]
+        args: [src/adapt, --no-error-summary, --cache-dir=/dev/null]
 
       - id: import-linter
         name: import-linter
