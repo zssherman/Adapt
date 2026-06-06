@@ -25,9 +25,7 @@ import contextlib
 import copy
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import threading
 import time
 from datetime import datetime
@@ -36,28 +34,24 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-@contextlib.contextmanager
-def _suppress_osx_stderr():
-    """Redirect fd 2 to /dev/null for the duration of the block.
-
-    macOS ObjC runtime prints NSOpenPanel/NSWindow warnings directly to
-    file-descriptor 2, bypassing Python's sys.stderr.  Only an OS-level
-    dup2 can suppress them.
-    """
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    saved = os.dup(2)
-    os.dup2(devnull, 2)
-    os.close(devnull)
-    try:
-        yield
-    finally:
-        os.dup2(saved, 2)
-        os.close(saved)
-
-
 # ── Tkinter ───────────────────────────────────────────────────────────────────
 import tkinter as tk  # noqa: E402
-from tkinter import filedialog, messagebox, scrolledtext, ttk  # noqa: E402
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk  # noqa: E402
+
+from adapt.consumers.live._utils import (  # noqa: E402
+    _PID_FILE,
+    _apply_overflow_action,
+    _cell_uid_disp,
+    _centroid_track_to_km,
+    _find_adapt_exe,
+    _list_radars,
+    _list_runs,
+    _next_free_color_slot,
+    _pipeline_pid_from_file,
+    _pipeline_running,
+    _suppress_osx_stderr,
+    _visible_uids_in_scan,
+)
 
 # ── Optional deps ─────────────────────────────────────────────────────────────
 try:
@@ -72,26 +66,15 @@ try:
 
     matplotlib.use("TkAgg")
     import cmweather  # noqa: F401 — registers ChaseSpectral and other radar colormaps — must follow use()
-    import matplotlib.dates as mdates
     import matplotlib.lines as mlines
     import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_tkagg import (
-        FigureCanvasTkAgg,
-        NavigationToolbar2Tk,
-    )
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
 
-try:
-    import contextily as ctx
-
-    HAS_CTX = True
-except ImportError:
-    ctx = None
-    HAS_CTX = False
 REFL_CMAP = "ChaseSpectral"
 
 try:
@@ -103,18 +86,10 @@ try:
 except ImportError:
     HAS_DATA = False
 
-try:
-    from pyproj import Transformer
-
-    HAS_PROJ = True
-except ImportError:
-    HAS_PROJ = False
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 POLL_MS = 10_000  # auto-refresh every 10 s
 LOG_MAX = 500
-_PID_FILE = Path.home() / ".adapt" / "pipeline.pid"
-
+LOG_FILE = Path.home() / ".adapt" / "pipeline.log"
 # ── Stats strip theme ─────────────────────────────────────────────────────────
 _STRIP_BG = "#252526"  # very dark gray — readable on any system theme
 _BOX_BG = "#1e1e1e"  # slightly darker for individual boxes
@@ -144,34 +119,6 @@ _HV_KEYS = (
 )
 
 
-def _centroid_track_to_km(
-    history_df: "pd.DataFrame",
-    x_metres: "np.ndarray",
-    y_metres: "np.ndarray",
-) -> "tuple[np.ndarray, np.ndarray]":
-    """Convert pixel centroid history to (x_km, y_km) using dataset grid coordinates.
-
-    Uses stored integer pixel indices to index directly into the dataset's x/y
-    coordinate arrays, bypassing any lat/lon round-trip approximation.
-    """
-    cols = history_df["cell_centroid_mass_x"].values.astype(int)
-    rows = history_df["cell_centroid_mass_y"].values.astype(int)
-    return x_metres[cols] / 1000.0, y_metres[rows] / 1000.0
-
-
-def _cell_uid_disp(uid) -> str:
-    try:
-        import pandas as _pd
-
-        if _pd.isna(uid):
-            return "\u2014"
-    except Exception:
-        logger.exception("Failed to normalize cell UID display value")
-    if uid is None:
-        return "\u2014"
-    return str(uid)[:4]
-
-
 # ── Variable selector defaults: (vmin, vmax, unit, cmap) ─────────────────────
 _VAR_DEFAULTS = {
     "reflectivity": (10, 60, "dBZ", "ChaseSpectral"),
@@ -187,173 +134,24 @@ _VAR_LABELS = {
 }
 
 
-# ── Compact toolbar: no Back/Forward; shows x y lat lon in coordinate bar ────
-_CompactToolbar: type | None = None
-if HAS_MPL:
-
-    class _CompactToolbarCls(NavigationToolbar2Tk):
-        toolitems: tuple = tuple(
-            t for t in NavigationToolbar2Tk.toolitems if t[0] not in ("Back", "Forward")
-        )
-
-        def __init__(self, canvas, window, *, pack_toolbar=True, lat0=0.0, lon0=0.0):
-            self._ltrans = None
-            if HAS_PROJ and (lat0 or lon0):
-                with contextlib.suppress(Exception):
-                    self._ltrans = Transformer.from_crs(
-                        f"+proj=aeqd +lat_0={lat0} +lon_0={lon0} +units=m",
-                        "EPSG:4326",
-                        always_xy=True,
-                    )
-            super().__init__(canvas, window, pack_toolbar=pack_toolbar)
-
-        def set_message(self, s):
-            if self._ltrans is not None and s and "x=" in s:
-                try:
-                    toks = {
-                        t.split("=")[0]: float(t.split("=")[1])
-                        for t in s.split()
-                        if "=" in t and len(t.split("=")) == 2
-                    }
-                    x_km = toks.get("x", 0.0)
-                    y_km = toks.get("y", 0.0)
-                    lon_v, lat_v = self._ltrans.transform(x_km * 1000.0, y_km * 1000.0)
-                    s = f"x={x_km:.2f}  y={y_km:.2f}    {lat_v:.4f}\u00b0  {lon_v:.4f}\u00b0"
-                except Exception:
-                    logger.exception("Failed to update toolbar coordinate message")
-            super().set_message(s)
-
-    _CompactToolbar = _CompactToolbarCls
-
-
-# ── Range slider widget ───────────────────────────────────────────────────────
-
-
-class _RangeSlider(tk.Canvas):
-    """Single-bar dual-handle range slider."""
-
-    _PAD = 10
-    _R = 7
-    _CY = 14
-
-    def __init__(self, parent, from_, to, lo_var, hi_var, fmt=".1f", **kw):
-        kw.setdefault("height", 28)
-        kw.setdefault("highlightthickness", 0)
-        super().__init__(parent, **kw)
-        self._from, self._to = from_, to
-        self._lo, self._hi = lo_var, hi_var
-        self._fmt = fmt
-        self._drag = None
-        self.bind("<Configure>", lambda _: self._draw())
-        self.bind("<ButtonPress-1>", self._on_press)
-        self.bind("<B1-Motion>", self._on_drag)
-        self.bind("<ButtonRelease-1>", lambda _: setattr(self, "_drag", None))
-        lo_var.trace_add("write", lambda *_: self._draw())
-        hi_var.trace_add("write", lambda *_: self._draw())
-
-    def _tw(self):
-        return max(self.winfo_width(), 160) - 2 * self._PAD
-
-    def _v2x(self, v):
-        ratio = (v - self._from) / (self._to - self._from)
-        return self._PAD + max(0.0, min(1.0, ratio)) * self._tw()
-
-    def _x2v(self, x):
-        ratio = (x - self._PAD) / self._tw()
-        return self._from + max(0.0, min(1.0, ratio)) * (self._to - self._from)
-
-    def _draw(self):
-        self.delete("all")
-        w = self._PAD + self._tw() + self._PAD
-        cy = self._CY
-        lx = self._v2x(self._lo.get())
-        hx = self._v2x(self._hi.get())
-        r = self._R
-        self.create_line(
-            self._PAD, cy, w - self._PAD, cy, fill="#cccccc", width=4, capstyle="round"
-        )
-        self.create_line(lx, cy, hx, cy, fill="#4a9eca", width=4, capstyle="round")
-        for x, tag in ((lx, "lo"), (hx, "hi")):
-            self.create_oval(
-                x - r,
-                cy - r,
-                x + r,
-                cy + r,
-                fill="#2980b9",
-                outline="#1a5276",
-                width=1,
-                tags=tag,
-            )
-
-    def _on_press(self, event):
-        lx = self._v2x(self._lo.get())
-        hx = self._v2x(self._hi.get())
-        self._drag = "lo" if abs(event.x - lx) <= abs(event.x - hx) else "hi"
-
-    def _on_drag(self, event):
-        val = self._x2v(event.x)
-        if self._drag == "lo":
-            self._lo.set(min(val, self._hi.get()))
-        else:
-            self._hi.set(max(val, self._lo.get()))
-        self.event_generate("<<RangeChanged>>")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _find_adapt_exe() -> list:
-    """Return command list for adapt run-nexrad."""
-    candidate = Path(sys.executable).parent / "adapt"
-    if candidate.exists():
-        return [str(candidate)]
-    found = shutil.which("adapt")
-    if found:
-        return [found]
-    return [sys.executable, "-m", "adapt.cli"]
-
-
-def _pipeline_running() -> bool:
-    """Return True if a pipeline PID file exists and the process is alive."""
-    if not _PID_FILE.exists():
-        return False
-    try:
-        pid = int(_PID_FILE.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        logger.exception("Failed to verify pipeline PID status")
-        return False
-
-
-def _list_radars(repo: Path) -> list:
-    """Return all registered radar IDs from the repository registry."""
-    if not repo.exists():
-        return []
-    from adapt.api.client import RepositoryClient
-
-    return sorted(RepositoryClient(repo).radars())
-
-
-def _list_runs(repo: Path, radar: str | None = None) -> list:
-    """Return formatted run strings from the repository registry.
-
-    Returns
-    -------
-    list
-        List of strings: "run_id  (MM-DD HH:MM)"
-    """
-    if not repo.exists():
-        return []
-    from adapt.api.client import RepositoryClient
-
-    runs = RepositoryClient(repo).runs(radar=radar)
-    result = []
-    for run in runs:
-        mtime = run.start_time.strftime("%m-%d %H:%M") if run.start_time else "?"
-        result.append(f"{run.run_id}  ({mtime})")
-    return result
-
+from adapt.consumers.live._config import (  # noqa: E402, I001
+    _list_user_configs,
+    _load_default_config,
+    _load_recent_repos,
+    _load_user_config,
+    _save_recent_repos,
+    _save_user_config,
+)
+from adapt.consumers.live._renderer import add_basemap as _add_basemap_fn  # noqa: E402
+from adapt.consumers.live._timeseries import (  # noqa: E402
+    apply_time_axis as _apply_time_axis_fn,
+    build_ts_title as _build_ts_title_fn,
+    clear_time_series as _clear_time_series_fn,
+    draw_scan_marker as _draw_scan_marker_fn,
+    style_ts_ax as _style_ts_ax_fn,
+    update_track_legend as _update_track_legend_fn,
+)
+from adapt.consumers.live._widgets import _CompactToolbar, _RangeSlider  # noqa: E402
 
 # ── Main dashboard window ─────────────────────────────────────────────────────
 
@@ -383,14 +181,32 @@ class AdaptDashboard(tk.Tk):
         self._cell_contours: dict[int, object] = {}  # cell_id -> contour set on radar ax
         self._hover_canvas = None  # ref to mpl canvas for hover
 
-        # Track click overlay state
-        self._selected_cell_uid: str | None = None
-        self._track_overlay: list | None = None  # matplotlib artists for tracking overlay
+        # Config — loaded from bundled JSON, optionally overridden by user-saved config
+        self._cfg: dict = _load_default_config()
+        self._color_slots: list[str] = self._cfg["colors"]
+
+        # Multi-cell selection: uid → color_slot_index; persists across scan changes
+        self._selected_cells: dict[str, int] = {}
+        self._track_overlay: dict[str, list] = {}  # uid → matplotlib artists
+        self._saved_zoom: tuple | None = None  # (xlim, ylim) preserved across redraws
+
+        # Plot settings dialog reference (prevent duplicate windows)
+        self._plot_settings_win: object | None = None
+
+        # Pipeline subprocess — single reference for both toolbar and wizard launches
+        self._log_file_handle: object | None = None  # open file handle for pipeline stdout
+
         self._ts_axes: tuple | None = None  # (ax_area, ax_dbz, ax_reserved)
-        self._show_flow_var: tk.BooleanVar | None = None  # set in _build_scan_tab
+        self._show_flow_var: tk.BooleanVar = tk.BooleanVar(value=False)
         self._colorbar: object | None = None  # active colorbar reference
         self._cbar_ax: object | None = None  # pre-allocated colorbar axes
-        self._bg_alpha_var: tk.DoubleVar | None = None  # grayscale background alpha
+        self._bg_alpha_var: tk.DoubleVar = tk.DoubleVar(value=0.85)
+        self._max_proj_var: tk.IntVar = tk.IntVar(value=0)
+        self._auto_refresh_var: tk.BooleanVar = tk.BooleanVar(value=True)
+
+        # Recent repos: loaded from user_dashboard.json["recent_repos"]
+        self._recent_repos: list[str] = _load_recent_repos()
+        self._pipeline_badge: tk.Label | None = None
 
         # NC loop animation state (replaces PNG loop)
         self._nc_loop_running = False
@@ -416,11 +232,16 @@ class AdaptDashboard(tk.Tk):
         self._plot_var = None  # tk.StringVar set in _build_scan_tab
         self._plot_vmin = None
         self._plot_vmax = None
-        self._max_proj_var = None  # tk.IntVar: 0 = all available proj steps
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Escape>", self._on_escape)
+        self.bind("<space>", lambda _: self._show_latest())
+        self.bind("<Left>", lambda _: self._prev_scan())
+        self.bind("<Right>", lambda _: self._next_scan())
+        self.bind("l", lambda _: self._toggle_nc_loop())
+        self.bind("<Control-r>", lambda _: self._refresh_all())
+        self.bind("<Control-o>", lambda _: self._browse_repo())
 
         # Start auto-refresh and status countdown ticker
         self._after_ids.append(self.after(500, self._schedule_refresh))
@@ -428,45 +249,57 @@ class AdaptDashboard(tk.Tk):
 
         if repo:
             self.after(200, self._on_repo_changed)
+        elif self._recent_repos:
+            # Auto-load most recent repo so panels show on startup without --repo arg
+            self._repo_root.set(self._recent_repos[0])
+            self.after(200, self._on_repo_changed)
+        else:
+            self.after(150, self._show_first_run_dialog)
+
+        # Offer reconnect if a pipeline is already running externally
+        if _pipeline_running() and self._proc is None:
+            self.after(600, self._check_reconnect)
 
     # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # ── Top toolbar ──────────────────────────────────────────────────────
-        toolbar = ttk.Frame(self, padding=(6, 5))
+        # ── Menubar ───────────────────────────────────────────────────────────
+        self._build_menubar()
+
+        # ── Top toolbar (single row) ──────────────────────────────────────────
+        toolbar = ttk.Frame(self, padding=(6, 4))
         toolbar.pack(side="top", fill="x")
 
-        # Row 1: Repo
-        row1 = ttk.Frame(toolbar)
-        row1.pack(fill="x")
-
-        ttk.Label(row1, text="Output repo:").pack(side="left")
-        repo_entry = ttk.Entry(row1, textvariable=self._repo_root, width=50)
-        repo_entry.pack(side="left", padx=2)
-        repo_entry.bind("<Return>", lambda _: self._on_repo_changed())
-        ttk.Button(row1, text="Browse", command=self._browse_repo).pack(side="left", padx=(2, 10))
-
-        ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
-        ttk.Button(row1, text="Refresh", command=self._refresh_all).pack(side="left", padx=2)
-
-        # Row 2: Radar + Run + Pipeline control
-        row2 = ttk.Frame(toolbar)
-        row2.pack(fill="x", pady=(3, 0))
-
-        ttk.Label(row2, text="Radar:").pack(side="left")
-        self.radar_cb = ttk.Combobox(row2, textvariable=self._radar, width=8, state="readonly")
+        ttk.Label(toolbar, text="Radar:").pack(side="left")
+        self.radar_cb = ttk.Combobox(toolbar, textvariable=self._radar, width=8, state="readonly")
         self.radar_cb.pack(side="left", padx=(2, 10))
         self.radar_cb.bind("<<ComboboxSelected>>", lambda _: self._on_radar_changed())
 
-        ttk.Label(row2, text="Run:").pack(side="left")
-        self.run_cb = ttk.Combobox(row2, textvariable=self._run_sel, width=30, state="readonly")
-        self.run_cb.pack(side="left", padx=(2, 14))
+        ttk.Label(toolbar, text="Run:").pack(side="left")
+        self.run_cb = ttk.Combobox(toolbar, textvariable=self._run_sel, width=30, state="readonly")
+        self.run_cb.pack(side="left", padx=(2, 10))
 
-        ttk.Separator(row2, orient="vertical").pack(side="left", fill="y", padx=4)
-        self.btn_start = ttk.Button(row2, text="Start Pipeline", command=self._start)
-        self.btn_start.pack(side="left", padx=2)
-        self.btn_stop = ttk.Button(row2, text="Stop", command=self._stop, state="disabled")
-        self.btn_stop.pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Refresh", command=self._refresh_all).pack(side="left", padx=2)
+
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+        self._pipeline_badge = tk.Label(toolbar, text="○ Idle", fg="#888888", font=("", 10))
+        self._pipeline_badge.pack(side="left", padx=4)
+
+        # Repo indicator — right-aligned, click opens browse dialog
+        ttk.Separator(toolbar, orient="vertical").pack(side="right", fill="y", padx=4)
+        self._repo_label = tk.Label(
+            toolbar,
+            textvariable=self._repo_root,
+            fg="#555555",
+            font=("", 9),
+            cursor="hand2",
+            anchor="e",
+        )
+        self._repo_label.pack(side="right", padx=(0, 4))
+        self._repo_label.bind("<Button-1>", lambda _: self._browse_repo())
+        ttk.Label(toolbar, text="Repo:", font=("", 9), foreground="#777").pack(
+            side="right", padx=(8, 2)
+        )
 
         # ── Status bar ────────────────────────────────────────────────────────
         self.status_var = tk.StringVar(value="Idle — set Output repo and click Refresh")
@@ -521,14 +354,18 @@ class AdaptDashboard(tk.Tk):
         ttk.Entry(ctrl1, textvariable=self._plot_vmax, width=6, font=("Courier", 10)).pack(
             side="left", padx=2
         )
-        ttk.Label(
-            ctrl1,
-            text="  (change variable/range then click Show Latest or Show Loop)",
-            font=("", 9),
-            foreground="gray",
-        ).pack(side="left", padx=4)
 
-        # ── Row 2: scan selector + loop controls + render buttons ─────────────
+        ttk.Separator(ctrl1, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(ctrl1, text="Show Latest", command=self._show_latest).pack(side="left", padx=2)
+        self.btn_loop = ttk.Button(ctrl1, text="Show Loop", command=self._toggle_nc_loop)
+        self.btn_loop.pack(side="left", padx=2)
+        ttk.Button(ctrl1, text="Update", command=self._redraw).pack(side="left", padx=2)
+        ttk.Button(ctrl1, text="Clear Tracks", command=self._clear_canvas).pack(side="left", padx=2)
+        ttk.Button(ctrl1, text="⚙ Plot settings", command=self._open_plot_settings).pack(
+            side="left", padx=(8, 2)
+        )
+
+        # ── Row 2: scan selector + loop controls ─────────────────────────────
         ctrl2 = ttk.Frame(tab, padding=(4, 1, 4, 3))
         ctrl2.pack(side="top", fill="x")
 
@@ -574,46 +411,6 @@ class AdaptDashboard(tk.Tk):
             width=5,
             font=("Courier", 10),
         ).pack(side="left", padx=(2, 8))
-
-        ttk.Label(ctrl2, text="Proj steps:", font=("", 10)).pack(side="left", padx=(8, 0))
-        self._max_proj_var = tk.IntVar(value=0)
-        ttk.Spinbox(
-            ctrl2,
-            from_=0,
-            to=20,
-            textvariable=self._max_proj_var,
-            width=3,
-            font=("Courier", 10),
-        ).pack(side="left", padx=(2, 4))
-        ttk.Label(ctrl2, text="(0=all)", font=("", 9), foreground="gray").pack(
-            side="left", padx=(0, 8)
-        )
-
-        ttk.Button(ctrl2, text="Show Latest", command=self._show_latest).pack(side="left", padx=2)
-        self.btn_loop = ttk.Button(ctrl2, text="Show Loop", command=self._toggle_nc_loop)
-        self.btn_loop.pack(side="left", padx=2)
-        ttk.Button(ctrl2, text="Clear", command=self._clear_canvas).pack(side="left", padx=2)
-
-        ttk.Separator(ctrl2, orient="vertical").pack(side="left", fill="y", padx=8)
-        self._show_flow_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(ctrl2, text="Show flow", variable=self._show_flow_var).pack(
-            side="left", padx=2
-        )
-
-        ttk.Label(ctrl2, text="BG α:").pack(side="left", padx=(6, 0))
-        self._bg_alpha_var = tk.DoubleVar(value=0.85)
-        ttk.Spinbox(
-            ctrl2,
-            from_=0.0,
-            to=1.0,
-            increment=0.05,
-            format="%.2f",
-            textvariable=self._bg_alpha_var,
-            width=5,
-        ).pack(side="left", padx=2)
-
-        ttk.Separator(ctrl2, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Button(ctrl2, text="Update", command=self._redraw).pack(side="left", padx=2)
 
         # Canvas area — toolbar + cell info embedded by _render_nc
         self.scan_container = ttk.Frame(tab)
@@ -739,6 +536,8 @@ class AdaptDashboard(tk.Tk):
         ctrl.pack(side="top", fill="x")
         ttk.Button(ctrl, text="Refresh", command=self._flush_log).pack(side="left")
         ttk.Button(ctrl, text="Clear", command=self._clear_log).pack(side="left", padx=4)
+        ttk.Separator(ctrl, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(ctrl, text="■ Stop Pipeline", command=self._stop).pack(side="left")
 
         self.log_text = scrolledtext.ScrolledText(
             tab,
@@ -753,6 +552,424 @@ class AdaptDashboard(tk.Tk):
         self.log_text.tag_config("warning", foreground="#dcdcaa")
         self.log_text.tag_config("info", foreground="#9cdcfe")
 
+    # ── Menubar ───────────────────────────────────────────────────────────────
+
+    def _build_menubar(self) -> None:
+        mb = tk.Menu(self)
+        self.config(menu=mb)
+        self._build_file_menu(mb)
+        self._build_pipeline_menu(mb)
+        self._build_config_menu(mb)
+        self._build_view_menu(mb)
+
+    def _build_file_menu(self, mb: tk.Menu) -> None:
+        m = tk.Menu(mb, tearoff=False)
+        mb.add_cascade(label="File", menu=m)
+        m.add_command(label="Open Repository…", command=self._browse_repo, accelerator="Ctrl+O")
+        self._recent_menu = tk.Menu(m, tearoff=False)
+        m.add_cascade(label="Open Recent", menu=self._recent_menu)
+        m.add_separator()
+        m.add_command(label="Exit", command=self._on_close)
+        self._refresh_recent_menu()
+
+    def _build_pipeline_menu(self, mb: tk.Menu) -> None:
+        m = tk.Menu(mb, tearoff=False)
+        mb.add_cascade(label="Pipeline", menu=m)
+        m.add_command(label="Start New…", command=self._open_run_wizard)
+        m.add_command(label="■ Stop", command=self._stop_any)
+        m.add_separator()
+        m.add_checkbutton(label="Auto-refresh", variable=self._auto_refresh_var)
+        m.add_command(label="Refresh Now", command=self._refresh_all, accelerator="Ctrl+R")
+
+    def _build_config_menu(self, mb: tk.Menu) -> None:
+        cfg_menu = tk.Menu(mb, tearoff=False)
+        mb.add_cascade(label="Config", menu=cfg_menu)
+        self._load_cfg_menu = tk.Menu(cfg_menu, tearoff=False)
+        cfg_menu.add_cascade(label="Load Config", menu=self._load_cfg_menu)
+        cfg_menu.add_command(label="Save Config As…", command=self._save_config_as)
+        cfg_menu.add_separator()
+        cfg_menu.add_command(label="Reset to Defaults", command=self._reset_config)
+        self._refresh_load_cfg_menu()
+
+    def _build_view_menu(self, mb: tk.Menu) -> None:
+        m = tk.Menu(mb, tearoff=False)
+        mb.add_cascade(label="View", menu=m)
+        m.add_command(label="⚙ Plot Settings…", command=self._open_plot_settings)
+        m.add_separator()
+        m.add_checkbutton(label="Show Optical Flow", variable=self._show_flow_var)
+        m.add_command(label="Background Opacity…", command=self._ask_bg_alpha)
+        m.add_command(label="Projection Steps…", command=self._ask_proj_steps)
+        m.add_separator()
+        m.add_command(label="Keyboard Shortcuts…", command=self._show_shortcuts)
+
+    def _refresh_load_cfg_menu(self) -> None:
+        self._load_cfg_menu.delete(0, "end")
+        names = _list_user_configs()
+        if not names:
+            self._load_cfg_menu.add_command(label="(no saved configs)", state="disabled")
+            return
+        for name in names:
+            self._load_cfg_menu.add_command(
+                label=name,
+                command=lambda n=name: self._load_config(n),
+            )
+
+    def _load_config(self, name: str) -> None:
+        self._cfg = _load_user_config(name)
+        self._color_slots = self._cfg["colors"]
+        messagebox.showinfo("Config loaded", f"Loaded config: {name}", parent=self)
+
+    def _save_config_as(self) -> None:
+        name = simpledialog.askstring("Save Config", "Config name:", parent=self)
+        if not name:
+            return
+        _save_user_config(name.strip(), self._cfg)
+        self._refresh_load_cfg_menu()
+        messagebox.showinfo("Saved", f"Config saved as: {name.strip()}", parent=self)
+
+    def _reset_config(self) -> None:
+        self._cfg = _load_default_config()
+        self._color_slots = self._cfg["colors"]
+        messagebox.showinfo("Reset", "Dashboard config reset to defaults.", parent=self)
+
+    # ── Plot settings panel ───────────────────────────────────────────────────
+
+    def _open_plot_settings(self) -> None:
+        if self._plot_settings_win is not None:
+            try:
+                self._plot_settings_win.lift()
+                return
+            except Exception:
+                self._plot_settings_win = None
+
+        win = tk.Toplevel(self)
+        win.title("Line-plot settings")
+        win.resizable(False, False)
+        self._plot_settings_win = win
+        win.protocol("WM_DELETE_WINDOW", lambda: self._close_plot_settings(win))
+
+        group_names = list(self._cfg["plot_groups"].keys())
+        slot_vars = []
+        for i, label in enumerate(("Plot 1:", "Plot 2:", "Plot 3:")):
+            ttk.Label(win, text=label).grid(row=i, column=0, padx=8, pady=4, sticky="w")
+            var = tk.StringVar(value=self._cfg["plot_assignments"][i])
+            cb = ttk.Combobox(win, textvariable=var, values=group_names, state="readonly", width=16)
+            cb.grid(row=i, column=1, padx=8, pady=4)
+            slot_vars.append(var)
+
+        def _apply():
+            self._cfg["plot_assignments"] = [v.get() for v in slot_vars]
+            self._update_time_series_all()
+
+        ttk.Button(win, text="Apply", command=_apply).grid(row=3, column=0, columnspan=2, pady=8)
+
+    def _close_plot_settings(self, win) -> None:
+        self._plot_settings_win = None
+        win.destroy()
+
+    # ── Run ADAPT wizard ──────────────────────────────────────────────────────
+
+    def _open_run_wizard(self) -> None:
+        import webbrowser
+
+        win = tk.Toplevel(self)
+        win.title("Start New Pipeline")
+        win.resizable(False, False)
+
+        path_var = tk.StringVar(value=self._repo_root.get())
+        radar_var = tk.StringVar(value=self._radar.get())
+        mode_var = tk.StringVar(value="realtime")
+        start_var = tk.StringVar(value="")
+        end_var = tk.StringVar(value="")
+        config_mode_var = tk.StringVar(value="use")  # "use" | "create"
+        info_var = tk.StringVar(value="")
+
+        # ── Config mode radio ─────────────────────────────────────────────────
+        radio_f = ttk.Frame(win)
+        radio_f.grid(row=0, column=0, columnspan=3, padx=8, pady=(12, 4), sticky="w")
+        ttk.Radiobutton(
+            radio_f,
+            text="I have config file",
+            variable=config_mode_var,
+            value="use",
+            command=lambda: _on_mode_change(),
+        ).pack(side="left")
+        ttk.Radiobutton(
+            radio_f,
+            text="Create config in directory",
+            variable=config_mode_var,
+            value="create",
+            command=lambda: _on_mode_change(),
+        ).pack(side="left", padx=16)
+
+        # ── Path entry + Browse ───────────────────────────────────────────────
+        ttk.Label(win, text="Path:").grid(row=1, column=0, padx=8, pady=(4, 4), sticky="w")
+        ttk.Entry(win, textvariable=path_var, width=42).grid(row=1, column=1, padx=4, pady=(4, 4))
+
+        def _browse():
+            if config_mode_var.get() == "create":
+                chosen = filedialog.askdirectory(title="Select repository directory", parent=win)
+            else:
+                chosen = filedialog.askopenfilename(
+                    title="Select config.yaml",
+                    filetypes=[("YAML", "*.yaml *.yml"), ("All", "*.*")],
+                    parent=win,
+                )
+            if chosen:
+                path_var.set(chosen)
+
+        ttk.Button(win, text="Browse…", command=_browse).grid(
+            row=1, column=2, padx=(2, 8), pady=(4, 4)
+        )
+
+        # ── Radar ID ──────────────────────────────────────────────────────────
+        ttk.Label(win, text="Radar ID:").grid(row=2, column=0, padx=8, pady=(8, 4), sticky="w")
+        ttk.Entry(win, textvariable=radar_var, width=10).grid(
+            row=2, column=1, padx=4, pady=(8, 4), sticky="w"
+        )
+        ttk.Label(win, text="(optional if set in config)", font=("", 8), foreground="gray").grid(
+            row=2, column=2, padx=(0, 8), sticky="w"
+        )
+
+        # ── Mode ──────────────────────────────────────────────────────────────
+        ttk.Label(win, text="Mode:").grid(row=3, column=0, padx=8, pady=4, sticky="w")
+        mode_f = ttk.Frame(win)
+        mode_f.grid(row=3, column=1, pady=4, sticky="w")
+        ttk.Radiobutton(
+            mode_f,
+            text="Realtime",
+            variable=mode_var,
+            value="realtime",
+            command=lambda: _toggle_time(),
+        ).pack(side="left")
+        ttk.Radiobutton(
+            mode_f,
+            text="Historical",
+            variable=mode_var,
+            value="historical",
+            command=lambda: _toggle_time(),
+        ).pack(side="left", padx=8)
+
+        # ── Historical time range (hidden unless historical) ──────────────────
+        time_frame = ttk.Frame(win)
+        time_frame.grid(row=4, column=0, columnspan=3, padx=8, pady=(0, 4), sticky="ew")
+        ttk.Label(time_frame, text="Start (UTC):").grid(row=0, column=0, padx=(0, 4), sticky="w")
+        ttk.Entry(time_frame, textvariable=start_var, width=20).grid(row=0, column=1, padx=(0, 12))
+        ttk.Label(time_frame, text="End (UTC):").grid(row=0, column=2, padx=(0, 4), sticky="w")
+        ttk.Entry(time_frame, textvariable=end_var, width=20).grid(row=0, column=3)
+
+        # ── Docs link ─────────────────────────────────────────────────────────
+        docs = ttk.Label(
+            win,
+            text="More settings in config.yaml — see Adapt config docs",
+            foreground="blue",
+            cursor="hand2",
+        )
+        docs.grid(row=5, column=0, columnspan=3, padx=8, pady=4)
+        docs.bind(
+            "<Button-1>",
+            lambda _: webbrowser.open("https://arm-doe.github.io/Adapt/api/config.html"),
+        )
+
+        # ── Inline info label (shown after config creation) ───────────────────
+        info_label = ttk.Label(
+            win,
+            textvariable=info_var,
+            foreground="#1a6fad",
+            wraplength=400,
+            justify="left",
+        )
+        info_label.grid(row=6, column=0, columnspan=3, padx=12, pady=(2, 4), sticky="w")
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_frame = ttk.Frame(win)
+        btn_frame.grid(row=7, column=0, columnspan=3, pady=(4, 12))
+        ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+
+        create_btn = ttk.Button(
+            btn_frame,
+            text="Create Config",
+            command=lambda: self._create_config_from_wizard(
+                path_var.get().strip(),
+                win,
+                info_var,
+            ),
+        )
+        create_btn.pack(side="left", padx=8)
+
+        ttk.Button(
+            btn_frame,
+            text="Launch Pipeline",
+            command=lambda: self._launch_pipeline_from_wizard(
+                path_var.get().strip(),
+                radar_var.get().strip(),
+                mode_var.get(),
+                start_var.get() or None,
+                end_var.get() or None,
+                win,
+                config_mode_var.get(),
+                info_var,
+            ),
+        ).pack(side="left", padx=8)
+
+        def _toggle_time():
+            if mode_var.get() == "historical":
+                time_frame.grid()
+            else:
+                time_frame.grid_remove()
+
+        def _on_mode_change():
+            info_var.set("")
+            if config_mode_var.get() == "create":
+                create_btn.state(["!disabled"])
+            else:
+                create_btn.state(["disabled"])
+
+        _on_mode_change()  # set initial button state
+        _toggle_time()
+
+    def _create_config_from_wizard(self, path: str, wizard_win, info_var) -> None:
+        """Run 'adapt config' in the given directory and show an inline advisory."""
+        if not path:
+            messagebox.showerror("Missing input", "Enter a directory first.", parent=wizard_win)
+            return
+        p = Path(path)
+        if not p.is_dir():
+            messagebox.showerror(
+                "Not a directory", f"Expected a directory:\n{path}", parent=wizard_win
+            )
+            return
+        config_file = p / "config.yaml"
+        if config_file.exists():
+            info_var.set(f"ℹ config.yaml already exists at {config_file}.")
+            return
+        try:
+            result = subprocess.run(
+                [*_find_adapt_exe(), "config", str(config_file)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode != 0:
+                messagebox.showerror(
+                    "Config creation failed",
+                    f"adapt config failed:\n{result.stderr}",
+                    parent=wizard_win,
+                )
+                return
+        except Exception as exc:
+            messagebox.showerror("Config creation failed", str(exc), parent=wizard_win)
+            return
+        info_var.set(
+            f"ℹ config.yaml created at {config_file}. "
+            "Check config before running or click Launch Pipeline."
+        )
+
+    def _launch_pipeline_from_wizard(
+        self,
+        path: str,
+        radar: str,
+        mode: str,
+        start: str | None,
+        end: str | None,
+        wizard_win,
+        config_mode: str = "use",
+        info_var=None,
+    ) -> None:
+        """Resolve config path and launch the pipeline."""
+        if not path:
+            messagebox.showerror("Missing input", "Enter a path first.", parent=wizard_win)
+            return
+
+        # ── Check for any already-running pipeline ────────────────────────────
+        running_pid, running_proc = self._find_running_pipeline()
+        if running_pid is not None:
+            kill = messagebox.askyesno(
+                "Pipeline already running",
+                f"A pipeline is already running (PID {running_pid}).\n\nKill it and continue?",
+                parent=wizard_win,
+            )
+            if not kill:
+                return
+            if running_proc is not None:
+                with contextlib.suppress(Exception):
+                    running_proc.terminate()
+                    running_proc.wait(timeout=5)
+            else:
+                with contextlib.suppress(OSError):
+                    os.kill(running_pid, 15)
+            return  # user clicks Launch Pipeline again once old process is gone
+
+        p = Path(path)
+
+        if config_mode == "use":
+            # ── User has an existing config.yaml ──────────────────────────────
+            if not p.is_file():
+                messagebox.showerror(
+                    "Not a file", f"Expected a config.yaml file:\n{path}", parent=wizard_win
+                )
+                return
+            config_file = p
+            cmd = [*_find_adapt_exe(), "run-nexrad", str(config_file)]
+            if radar:
+                cmd += ["--radar", radar]
+            if mode == "historical":
+                if start:
+                    cmd += ["--start-time", start]
+                if end:
+                    cmd += ["--end-time", end]
+
+        else:
+            # ── User created (or will use) config in a directory ──────────────
+            if not p.is_dir():
+                messagebox.showerror(
+                    "Not a directory", f"Expected a directory:\n{path}", parent=wizard_win
+                )
+                return
+            config_file = p / "config.yaml"
+            if not config_file.exists():
+                messagebox.showerror(
+                    "No config.yaml",
+                    f"No config.yaml found in:\n{p}\n\nClick 'Create Config' first.",
+                    parent=wizard_win,
+                )
+                return
+            cmd = [
+                *_find_adapt_exe(),
+                "run-nexrad",
+                str(config_file),
+                "--base-dir",
+                str(p),
+                "--mode",
+                mode,
+            ]
+            if radar:
+                cmd += ["--radar", radar]
+            if mode == "historical":
+                if start:
+                    cmd += ["--start-time", start]
+                if end:
+                    cmd += ["--end-time", end]
+
+        # Auto-select the repo in the dashboard so panels load from this run
+        repo_dir = str(p) if p.is_dir() else str(p.parent)
+        self._repo_root.set(repo_dir)
+        self._record_recent_repo(repo_dir)
+        # adapt_registry.db is created by the pipeline on first run, so retry
+        # until it appears (3 s, 8 s, 15 s, 25 s after launch).
+        for delay_ms in (3000, 5000, 7000, 10000):
+            self._after_ids.append(self.after(delay_ms, self._on_repo_changed))
+
+        wizard_win.destroy()
+        self._launch_pipeline(cmd)
+        if self._proc is not None:
+            messagebox.showinfo(
+                "Pipeline started",
+                f"Adapt pipeline running (PID {self._proc.pid}).\n"
+                f"Output is streamed to the Log tab and saved to:\n{LOG_FILE}",
+                parent=self,
+            )
+
     # ── Browse / selection ────────────────────────────────────────────────────
 
     def _browse_repo(self):
@@ -760,7 +977,32 @@ class AdaptDashboard(tk.Tk):
             path = filedialog.askdirectory(title="Select Adapt output repository", parent=self)
         if path:
             self._repo_root.set(path)
+            self._record_recent_repo(path)
             self._on_repo_changed()
+
+    def _record_recent_repo(self, path: str) -> None:
+        """Prepend path to recent list (dedup, cap at 5) and persist."""
+        repos = [r for r in self._recent_repos if r != path]
+        repos.insert(0, path)
+        self._recent_repos = repos[:5]
+        _save_recent_repos(self._recent_repos)
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self) -> None:
+        self._recent_menu.delete(0, "end")
+        if not self._recent_repos:
+            self._recent_menu.add_command(label="(none)", state="disabled")
+            return
+        for repo in self._recent_repos:
+            self._recent_menu.add_command(
+                label=repo,
+                command=lambda r=repo: self._open_recent_repo(r),
+            )
+
+    def _open_recent_repo(self, path: str) -> None:
+        self._repo_root.set(path)
+        self._record_recent_repo(path)
+        self._on_repo_changed()
 
     def _on_repo_changed(self):
         repo = Path(self._repo_root.get().strip())
@@ -788,6 +1030,7 @@ class AdaptDashboard(tk.Tk):
         self._on_radar_changed()
 
     def _on_radar_changed(self):
+        self._saved_zoom = None  # reset zoom when radar/run changes
         repo = Path(self._repo_root.get().strip())
         radar = self._radar.get().strip().upper()
         # Pass radar to filter runs by the selected radar
@@ -800,6 +1043,9 @@ class AdaptDashboard(tk.Tk):
         self._today = datetime.now().strftime("%Y%m%d")
         self._last_n_plots = -1
         self._refresh_all()
+        # Auto-show the latest scan so panels appear immediately on repo load
+        if self._all_nc_files and HAS_MPL and HAS_DATA:
+            self.after(100, self._show_latest)
 
     # ── Pipeline control ──────────────────────────────────────────────────────
 
@@ -812,8 +1058,15 @@ class AdaptDashboard(tk.Tk):
         if not repo:
             messagebox.showerror("Missing input", "Set the Output repo path first", parent=self)
             return
+        if self._proc and self._proc.poll() is None:
+            messagebox.showerror(
+                "Already running",
+                "Stop the current pipeline before starting a new one.",
+                parent=self,
+            )
+            return
         if _pipeline_running():
-            pid = _PID_FILE.read_text().strip()
+            pid = _pipeline_pid_from_file()
             messagebox.showerror(
                 "Already running",
                 f"A pipeline is already running (PID {pid}).\nStop it first or delete {_PID_FILE}.",
@@ -824,7 +1077,6 @@ class AdaptDashboard(tk.Tk):
         self._radar.set(radar)
         self._today = datetime.now().strftime("%Y%m%d")
         self._last_n_plots = -1
-        self._log_lines = []
 
         cmd = [
             *_find_adapt_exe(),
@@ -836,40 +1088,127 @@ class AdaptDashboard(tk.Tk):
             "--mode",
             "realtime",
         ]
+        self.status_var.set(f"Running  |  {radar}  ->  {repo}")
+        self._launch_pipeline(cmd)
+        self._append_log(f"  Command: {' '.join(cmd)}", "info")
+
+    def _launch_pipeline(self, cmd: list) -> None:
+        """Launch adapt pipeline, redirect all output to LOG_FILE, start watcher threads."""
+        self._log_lines = []
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = LOG_FILE.open("w", buffering=1)
+        self._log_file_handle = log_handle
         try:
             self._proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
+                stdout=log_handle,
                 stderr=subprocess.STDOUT,
-                text=True,
                 start_new_session=True,
             )
-        except Exception as e:
-            logger.exception("Failed to launch pipeline subprocess: %s", cmd)
-            messagebox.showerror("Launch failed", str(e), parent=self)
+        except Exception as exc:
+            logger.exception("Failed to launch pipeline: %s", cmd)
+            log_handle.close()
+            self._log_file_handle = None
+            messagebox.showerror("Launch failed", str(exc), parent=self)
             return
+        self._append_log(
+            f"[{datetime.now():%H:%M:%S}] Pipeline started (PID {self._proc.pid})", "info"
+        )
+        self._append_log(f"  Log: {LOG_FILE}", "info")
+        self._start_log_tail(LOG_FILE)
+        self._start_proc_watcher(self._proc)
+        self._update_pipeline_badge()
 
-        self.btn_start.config(state="disabled")
-        self.btn_stop.config(state="normal")
-        self.status_var.set(f"Running  |  {radar}  ->  {repo}")
+    def _start_log_tail(self, log_path: Path) -> None:
+        """Daemon thread: tail log_path and append new lines to the log display."""
 
-        def _read():
-            for line in self._proc.stdout:
-                self._log_lines.append(line.rstrip())
-                if len(self._log_lines) > LOG_MAX:
-                    self._log_lines.pop(0)
+        def _tail():
+            try:
+                with log_path.open("r") as f:
+                    f.seek(0, 2)  # start at end — don't replay old content
+                    while self._refresh_active:
+                        line = f.readline()
+                        if line:
+                            line = line.rstrip()
+                            self._log_lines.append(line)
+                            if len(self._log_lines) > LOG_MAX:
+                                self._log_lines.pop(0)
+                            tag = (
+                                "error"
+                                if "ERROR" in line
+                                else "warning"
+                                if "WARNING" in line
+                                else ""
+                            )
+                            self.after(0, self._append_log, line, tag)
+                        else:
+                            if self._proc is None or self._proc.poll() is not None:
+                                break
+                            time.sleep(0.15)
+            except Exception:
+                logger.exception("Log tail thread failed")
+
+        threading.Thread(target=_tail, daemon=True, name="LogTail").start()
+
+    def _start_log_tail_from_end(self, log_path: Path, last_n: int = 200) -> None:
+        """Tail log_path starting from the last *last_n* lines (for reconnect)."""
+
+        def _tail_reconnect():
+            try:
+                with log_path.open("r") as f:
+                    lines = f.readlines()
+                    for ln in lines[-last_n:]:
+                        ln = ln.rstrip()
+                        self._log_lines.append(ln)
+                        tag = "error" if "ERROR" in ln else "warning" if "WARNING" in ln else ""
+                        self.after(0, self._append_log, ln, tag)
+                    # Continue tailing from current position
+                    while self._refresh_active and _pipeline_running():
+                        line = f.readline()
+                        if line:
+                            line = line.rstrip()
+                            self._log_lines.append(line)
+                            if len(self._log_lines) > LOG_MAX:
+                                self._log_lines.pop(0)
+                            tag = (
+                                "error"
+                                if "ERROR" in line
+                                else "warning"
+                                if "WARNING" in line
+                                else ""
+                            )
+                            self.after(0, self._append_log, line, tag)
+                        else:
+                            time.sleep(0.2)
+            except Exception:
+                logger.exception("Reconnect log tail thread failed")
+
+        threading.Thread(target=_tail_reconnect, daemon=True, name="LogTailReconnect").start()
+
+    def _start_proc_watcher(self, proc: subprocess.Popen) -> None:
+        """Daemon thread: block on proc.wait(), then fire _on_proc_ended on the main thread."""
+
+        def _watch():
+            proc.wait()
+            if self._log_file_handle is not None:
+                with contextlib.suppress(Exception):
+                    self._log_file_handle.close()
+                self._log_file_handle = None
             self.after(0, self._on_proc_ended)
 
-        threading.Thread(target=_read, daemon=True).start()
-        self._append_log(f"[{datetime.now():%H:%M:%S}] Pipeline started: {radar}", "info")
-        self._append_log(f"  Output: {repo}/{radar}", "info")
+        threading.Thread(target=_watch, daemon=True, name="ProcWatcher").start()
 
-    def _stop(self):
-        if not (self._proc and self._proc.poll() is None):
+    def _stop(self) -> None:
+        """Send SIGTERM to the pipeline process group; SIGKILL after 5 s timeout."""
+        if self._proc is None or self._proc.poll() is not None:
+            # No owned process — try PID-file-only external process
+            pid = _pipeline_pid_from_file()
+            if pid is not None:
+                with contextlib.suppress(OSError):
+                    os.kill(pid, 15)
             self._on_proc_ended()
             return
-        self.status_var.set("Stopping pipeline...")
-        self.btn_stop.config(state="disabled")
+        self.status_var.set("Stopping pipeline…")
         proc = self._proc
 
         def _do_kill():
@@ -884,45 +1223,240 @@ class AdaptDashboard(tk.Tk):
                     os.killpg(os.getpgid(proc.pid), 9)
                 except OSError:
                     proc.kill()
-            self.after(0, self._on_proc_ended)
 
         threading.Thread(target=_do_kill, daemon=True).start()
 
-    def _on_proc_ended(self):
-        self.btn_start.config(state="normal")
-        self.btn_stop.config(state="disabled")
+    def _on_proc_ended(self) -> None:
+        rc = self._proc.returncode if self._proc else None
+        self._proc = None
+        rc_str = f"exit {rc}" if rc is not None else "unknown"
         self.status_var.set(f"Stopped  |  {self._radar.get()}")
+        self._append_log(f"[{datetime.now():%H:%M:%S}] Pipeline ended ({rc_str})", "info")
+        self._update_pipeline_badge()
+        self._flush_log()
+
+    def _stop_any(self) -> None:
+        self._stop()
+
+    def _find_running_pipeline(self) -> tuple[int | None, subprocess.Popen | None]:
+        """Return (pid, proc) for the active pipeline, or (None, None) if idle."""
+        if self._proc is not None and self._proc.poll() is None:
+            return self._proc.pid, self._proc
+        pid = _pipeline_pid_from_file()
+        if pid is not None and _pipeline_running():
+            return pid, None
+        return None, None
+
+    def _update_pipeline_badge(self) -> None:
+        if self._pipeline_badge is None:
+            return
+        running = (self._proc is not None and self._proc.poll() is None) or _pipeline_running()
+        if running:
+            self._pipeline_badge.config(text="● Pipeline running", fg="#4daf4a")
+        else:
+            self._pipeline_badge.config(text="○ Idle", fg="#888888")
+
+    def _check_reconnect(self) -> None:
+        """Offer to reconnect to an externally running pipeline on startup."""
+        if not _pipeline_running() or self._proc is not None:
+            return
+        pid = _pipeline_pid_from_file()
+        if pid is None:
+            return
+        ans = messagebox.askyesno(
+            "Pipeline already running",
+            f"Adapt pipeline (PID {pid}) is already running.\n\nReconnect to its log output?",
+            parent=self,
+        )
+        if ans:
+            self._reconnect_pipeline(pid)
+
+    def _reconnect_pipeline(self, pid: int) -> None:
+        """Attach log tail to a pipeline started outside this GUI session."""
+        self._append_log(f"[{datetime.now():%H:%M:%S}] Reconnected to pipeline PID {pid}", "info")
+        self._update_pipeline_badge()
+        if LOG_FILE.exists():
+            self._start_log_tail_from_end(LOG_FILE, last_n=200)
+        self._after_ids.append(self.after(2000, lambda: self._poll_external_pid(pid)))
+
+    def _poll_external_pid(self, pid: int) -> None:
+        """Poll every 2 s for death of an external (PID-file-only) pipeline."""
+        if not _pipeline_running():
+            self._on_proc_ended()
+            return
+        self._after_ids.append(self.after(2000, lambda: self._poll_external_pid(pid)))
+
+    def _ask_bg_alpha(self) -> None:
+        val = simpledialog.askfloat(
+            "Background Opacity",
+            "Enter opacity 0.0–1.0:",
+            initialvalue=self._bg_alpha_var.get(),
+            minvalue=0.0,
+            maxvalue=1.0,
+            parent=self,
+        )
+        if val is not None:
+            self._bg_alpha_var.set(val)
+
+    def _ask_proj_steps(self) -> None:
+        val = simpledialog.askinteger(
+            "Projection Steps",
+            "Max steps to show (0 = all):",
+            initialvalue=self._max_proj_var.get(),
+            minvalue=0,
+            maxvalue=20,
+            parent=self,
+        )
+        if val is not None:
+            self._max_proj_var.set(val)
+
+    def _show_shortcuts(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("Keyboard Shortcuts")
+        win.resizable(False, False)
+        shortcuts = [
+            ("Space", "Show Latest scan"),
+            ("← / →", "Previous / Next scan"),
+            ("l", "Toggle loop"),
+            ("Ctrl+R", "Refresh"),
+            ("Ctrl+O", "Open Repository"),
+            ("Escape", "Stop loop"),
+        ]
+        for i, (key, desc) in enumerate(shortcuts):
+            ttk.Label(win, text=key, font=("Courier", 10, "bold"), width=12, anchor="e").grid(
+                row=i, column=0, padx=(12, 4), pady=3
+            )
+            ttk.Label(win, text=desc, font=("", 10)).grid(
+                row=i, column=1, padx=(4, 12), pady=3, sticky="w"
+            )
+        ttk.Button(win, text="Close", command=win.destroy).grid(
+            row=len(shortcuts), column=0, columnspan=2, pady=8
+        )
+
+    def _show_first_run_dialog(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("Welcome to Adapt Dashboard")
+        win.resizable(False, False)
+        win.grab_set()
+
+        pad = dict(padx=20, pady=6)
+
+        ttk.Label(win, text="Welcome to Adapt Dashboard", font=("", 13, "bold")).pack(**pad)
+        ttk.Label(
+            win,
+            text=(
+                "Adapt Dashboard is a read-only viewer for radar pipeline output.\n"
+                "Choose one of the options below to get started."
+            ),
+            justify="center",
+        ).pack(padx=20, pady=(0, 10))
+
+        ttk.Separator(win, orient="horizontal").pack(fill="x", padx=16, pady=4)
+
+        # ── Option A: open existing repository ───────────────────────────────
+        ttk.Label(win, text="Open an existing repository", font=("", 10, "bold")).pack(**pad)
+        ttk.Label(
+            win,
+            text=(
+                "Select the output folder from a previous or currently running\n"
+                "Adapt pipeline run (must contain adapt_registry.db)."
+            ),
+            justify="center",
+            foreground="#555555",
+        ).pack(padx=20, pady=(0, 6))
+
+        repo_var = tk.StringVar()
+        row = ttk.Frame(win)
+        row.pack(padx=20, pady=(0, 6))
+        ttk.Entry(row, textvariable=repo_var, width=42).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            row,
+            text="Browse…",
+            command=lambda: repo_var.set(
+                filedialog.askdirectory(title="Select repository folder", parent=win)
+                or repo_var.get()
+            ),
+        ).pack(side="left")
+
+        def _open():
+            path = repo_var.get().strip()
+            if not path:
+                return
+            win.destroy()
+            self._repo_root.set(path)
+            self._record_recent_repo(path)
+            self._on_repo_changed()
+
+        ttk.Button(win, text="Open Repository", command=_open).pack(pady=(2, 10))
+
+        ttk.Separator(win, orient="horizontal").pack(fill="x", padx=16, pady=4)
+
+        # ── Option B: start a new pipeline ───────────────────────────────────
+        ttk.Label(win, text="Run a new pipeline", font=("", 10, "bold")).pack(**pad)
+        ttk.Label(
+            win,
+            text=(
+                "Launch a new Adapt pipeline from a config file.\n"
+                "The dashboard will connect to it automatically."
+            ),
+            justify="center",
+            foreground="#555555",
+        ).pack(padx=20, pady=(0, 6))
+
+        def _start_new():
+            win.destroy()
+            self._open_run_wizard()
+
+        ttk.Button(win, text="Start New Pipeline…", command=_start_new).pack(pady=(2, 16))
 
     def _on_close(self):
-        # Stop all pending after() callbacks before destroying to avoid
-        # "invalid command name" errors from orphaned scheduled calls.
+        # Cancel all pending after() callbacks before destroying.
         self._nc_loop_running = False
+        self._refresh_active = False
         for after_id in self._after_ids:
             with contextlib.suppress(Exception):
                 self.after_cancel(after_id)
         self._after_ids.clear()
 
-        # Close matplotlib figures
         plt.close("all")
 
+        # Close log file handle so tail threads exit cleanly.
+        if self._log_file_handle is not None:
+            with contextlib.suppress(Exception):
+                self._log_file_handle.close()
+            self._log_file_handle = None
+
         if self._proc and self._proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(self._proc.pid), 15)
-            except OSError:
-                self._proc.terminate()
-            try:
-                self._proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
+            pid = self._proc.pid
+            choice = messagebox.askyesnocancel(
+                "Pipeline running",
+                f"Adapt pipeline (PID {pid}) is still running.\n\n"
+                "Yes → Kill it now\n"
+                f"No  → Keep it running in the background\n"
+                "Cancel → Stay in dashboard",
+                parent=self,
+            )
+            if choice is None:
+                # User cancelled — restore refresh loop and stay open.
+                self._refresh_active = True
+                self._after_ids.append(self.after(POLL_MS, self._schedule_refresh))
+                self._after_ids.append(self.after(1000, self._status_tick))
+                return
+            if choice:
                 try:
-                    os.killpg(os.getpgid(self._proc.pid), 9)
+                    os.killpg(os.getpgid(self._proc.pid), 15)
                 except OSError:
-                    self._proc.kill()
+                    self._proc.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    self._proc.wait(timeout=3)
+
         self.destroy()
 
     # ── Auto-refresh ──────────────────────────────────────────────────────────
 
     def _schedule_refresh(self):
-        self._refresh_all()
+        if self._auto_refresh_var.get():
+            self._refresh_all()
         self._after_ids.append(self.after(POLL_MS, self._schedule_refresh))
 
     def _status_tick(self):
@@ -934,6 +1468,7 @@ class AdaptDashboard(tk.Tk):
         self.status_var.set(
             f"{self._status_base}  |  Last scan: {scan_str}  |  Next check: {secs}s"
         )
+        self._update_pipeline_badge()
         self._after_ids.append(self.after(1000, self._status_tick))
 
     def _refresh_all(self):
@@ -976,23 +1511,8 @@ class AdaptDashboard(tk.Tk):
                             raise
                         self._last_rendered_nc = latest
                         self.scan_var.set(labels[-1] if labels else "")
-                        db_path_r = Path(repo) / radar / "catalog.db"
-                        if self._selected_cell_uid and self._current_run_id and db_path_r.exists():
-                            try:
-                                from adapt.persistence.track_store import TrackStore
-
-                                hist = TrackStore(db_path_r, readonly=True).get_track_history(
-                                    self._current_run_id, self._selected_cell_uid
-                                )
-                                if not hist.empty:
-                                    self._update_time_series(hist)
-                                else:
-                                    self._clear_time_series()
-                            except Exception:
-                                logger.exception(
-                                    "Failed to refresh selected cell time series; clearing view"
-                                )
-                                self._clear_time_series()
+                        if self._selected_cells:
+                            self._update_time_series_all()
                         else:
                             self._clear_time_series()
                     except Exception:
@@ -1092,13 +1612,23 @@ class AdaptDashboard(tk.Tk):
             )
             return
         self._load_cells_data(repo, radar)
-        self._clear_canvas()
-        self._render_nc(nc_files[-1])
-        self._last_rendered_nc = nc_files[-1]
-        # Sync scan selector — show full run
+        # Sync scan selector
         labels = [self._nc_label(p) for p in nc_files]
         self.scan_cb["values"] = labels
         self.scan_var.set(labels[-1])
+        self._last_rendered_nc = nc_files[-1]
+        if self._canvas_refs is not None:
+            # Reuse existing canvas — preserves zoom and cell selection
+            _ds = xr.open_dataset(nc_files[-1])
+            try:
+                self._redraw(_ds)
+            except Exception:
+                _ds.close()
+                raise
+            if self._selected_cells:
+                self._update_time_series_all()
+        else:
+            self._render_nc(nc_files[-1])
 
     # ── Live render (single frame) ────────────────────────────────────────────
 
@@ -1131,8 +1661,20 @@ class AdaptDashboard(tk.Tk):
         nc_path = next((p for p in nc_files if p.stem == stem), nc_files[-1])
 
         self._load_cells_data(repo, radar)
-        self._clear_canvas()
-        self._render_nc(nc_path)
+        if self._canvas_refs is not None:
+            # Reuse existing canvas — preserves zoom and cell selection
+            _ds = xr.open_dataset(nc_path)
+            try:
+                self._redraw(_ds)
+            except Exception:
+                _ds.close()
+                raise
+            if self._selected_cells:
+                self._update_time_series_all()
+            else:
+                self._clear_time_series()
+        else:
+            self._render_nc(nc_path)
 
     def _load_cells_data(self, repo, radar):
         """Load per-cell data for the current run into self._current_cell_df.
@@ -1158,15 +1700,15 @@ class AdaptDashboard(tk.Tk):
                 if run_row:
                     run_id = run_row["run_id"]
                     conn.close()
-                    ts_obj = TrackStore(db_path, readonly=True)
-                    rows = (
-                        ts_obj._connect()
-                        .execute(
-                            "SELECT * FROM cells_by_scan WHERE run_id=? ORDER BY scan_time",
-                            (run_id,),
+                    with contextlib.closing(TrackStore(db_path, readonly=True)) as ts_obj:
+                        rows = (
+                            ts_obj._connect()
+                            .execute(
+                                "SELECT * FROM cells_by_scan WHERE run_id=? ORDER BY scan_time",
+                                (run_id,),
+                            )
+                            .fetchall()
                         )
-                        .fetchall()
-                    )
                     if rows:
                         self._current_cell_df = pd.DataFrame([dict(r) for r in rows])
                         self._current_run_id = run_id
@@ -1204,7 +1746,7 @@ class AdaptDashboard(tk.Tk):
         self._nc_loop_files = nc_files
         self._nc_loop_index = 0
         self.btn_loop.config(text="Stop Loop")
-        self._clear_canvas()
+        self._clear_canvas(clear_selection=False)  # keep selected cells so timeline stays populated
         self._nc_loop_running = True  # set AFTER clear so _clear_canvas doesn't kill it
         self._render_nc(nc_files[0])
         self._nc_loop_index = 1
@@ -1217,10 +1759,10 @@ class AdaptDashboard(tk.Tk):
         path = self._nc_loop_files[self._nc_loop_index % len(self._nc_loop_files)]
         self._nc_loop_index += 1
         if self._canvas_refs is not None:
-            self._clear_time_series()
             _ds = xr.open_dataset(path)
             try:
                 self._redraw(_ds)
+                self._update_time_series_all()
             except Exception:
                 _ds.close()
                 raise
@@ -1313,11 +1855,20 @@ class AdaptDashboard(tk.Tk):
         if ax is None:
             ax = fig.axes[0]
 
+        # Save zoom before ax.clear() wipes it
+        if self._saved_zoom is not None or (ax.lines or ax.collections):
+            try:
+                xlim, ylim = ax.get_xlim(), ax.get_ylim()
+                if xlim != (0.0, 1.0) or ylim != (0.0, 1.0):
+                    self._saved_zoom = (xlim, ylim)
+            except Exception:
+                pass
+
         ax.clear()
         ax.set_facecolor("white")
         # Track overlay artists were removed by ax.clear(); reset references
-        self._track_overlay = None
-        self._selected_cell_uid = None
+        self._track_overlay = {}
+        # NOTE: _selected_cells is intentionally NOT cleared here
 
         # Close previous dataset
         if self._current_nc_ds is not None and self._current_nc_ds is not ds:
@@ -1526,37 +2077,130 @@ class AdaptDashboard(tk.Tk):
             columnspacing=1.0,
         )
 
+        # Restore user zoom/pan if saved
+        if self._saved_zoom is not None:
+            ax.set_xlim(self._saved_zoom[0])
+            ax.set_ylim(self._saved_zoom[1])
+
+        # Re-draw selected-cell overlays for cells present in this scan
+        self._redraw_overlays_on(ax, ds)
+
+    def _redraw_overlays_on(self, ax, ds) -> None:
+        """Re-draw track paths and centroid markers for all selected cells."""
+        # Always clear old overlay artists first (ax.clear() invalidates them)
+        for artists in self._track_overlay.values():
+            for art in artists:
+                with contextlib.suppress(Exception):
+                    art.remove()
+        self._track_overlay = {}
+
+        if not self._selected_cells or not HAS_DATA:
+            return
+
+        cell_labels_da = ds.get("cell_labels", ds.get("labels", None))
+        if cell_labels_da is None:
+            return
+        labels_arr = cell_labels_da.values
+
+        # Build uid_map for this scan (label int → cell_uid)
+        uid_map: dict[int, str] = {}
+        if self._current_cell_df is not None and not self._current_cell_df.empty:
+            df = self._current_cell_df
+            if "cell_label" in df.columns and "cell_uid" in df.columns:
+                if self._current_scan_ts is not None and "scan_time" in df.columns:
+                    st = pd.to_datetime(df["scan_time"], utc=True)
+                    scan_ts = pd.Timestamp(self._current_scan_ts)
+                    if scan_ts.tzinfo is None:
+                        scan_ts = scan_ts.tz_localize("UTC")
+                    scan_df = df[(st - scan_ts).abs() < pd.Timedelta(seconds=60)]
+                else:
+                    scan_df = df
+                uid_map = dict(
+                    zip(scan_df["cell_label"].astype(int), scan_df["cell_uid"], strict=False)
+                )
+        visible = _visible_uids_in_scan(labels_arr, uid_map)
+
+        repo = self._repo_root.get().strip()
+        radar = self._radar.get().strip().upper()
+        db_path = Path(repo) / radar / "catalog.db"
+        x_metres = ds["x"].values
+        y_metres = ds["y"].values
+
+        for uid, slot in self._selected_cells.items():
+            color = self._color_slots[slot % len(self._color_slots)]
+            artists: list = []
+
+            # Load full track history for path drawing
+            history_df = None
+            if self._current_run_id and db_path.exists():
+                try:
+                    from adapt.persistence.track_store import TrackStore
+
+                    with contextlib.closing(TrackStore(db_path, readonly=True)) as _ts:
+                        history_df = _ts.get_track_history(self._current_run_id, uid)
+                except Exception:
+                    logger.exception("Failed to load track history for %s", uid)
+            if (history_df is None or history_df.empty) and self._current_cell_df is not None:
+                df = self._current_cell_df
+                if "cell_uid" in df.columns:
+                    history_df = df[df["cell_uid"] == uid].copy()
+
+            # Draw track path (line + dots)
+            if (
+                history_df is not None
+                and not history_df.empty
+                and "cell_centroid_mass_x" in history_df.columns
+            ):
+                track_df = history_df.dropna(
+                    subset=["cell_centroid_mass_x", "cell_centroid_mass_y"]
+                ).sort_values("scan_time")
+                if not track_df.empty:
+                    x_arr, y_arr = _centroid_track_to_km(track_df, x_metres, y_metres)
+                    (line,) = ax.plot(
+                        x_arr, y_arr, "-", color=color, linewidth=1.5, alpha=0.85, zorder=10
+                    )
+                    dots = ax.scatter(x_arr, y_arr, s=14, color=color, zorder=11, alpha=0.7)
+                    artists.extend([line, dots])
+
+            # Draw current-scan star only when cell is present in this scan
+            if uid in visible and self._current_cell_df is not None:
+                df = self._current_cell_df
+                if "cell_uid" in df.columns:
+                    if self._current_scan_ts is not None and "scan_time" in df.columns:
+                        st = pd.to_datetime(df["scan_time"], utc=True)
+                        scan_ts = pd.Timestamp(self._current_scan_ts)
+                        if scan_ts.tzinfo is None:
+                            scan_ts = scan_ts.tz_localize("UTC")
+                        scan_rows = df[
+                            ((st - scan_ts).abs() < pd.Timedelta(seconds=60))
+                            & (df["cell_uid"] == uid)
+                        ]
+                    else:
+                        scan_rows = df[df["cell_uid"] == uid]
+                    if not scan_rows.empty:
+                        cur = scan_rows.iloc[0]
+                        cx = cur.get("cell_centroid_mass_x")
+                        cy = cur.get("cell_centroid_mass_y")
+                        if cx is not None and cy is not None and pd.notna(cx) and pd.notna(cy):
+                            col_i = int(cx)
+                            row_i = int(cy)
+                            if 0 <= col_i < len(x_metres) and 0 <= row_i < len(y_metres):
+                                star = ax.scatter(
+                                    [x_metres[col_i] / 1000.0],
+                                    [y_metres[row_i] / 1000.0],
+                                    s=120,
+                                    color=color,
+                                    marker="*",
+                                    zorder=12,
+                                )
+                                artists.append(star)
+
+            if artists:
+                self._track_overlay[uid] = artists
+
     @staticmethod
     def _add_basemap(ax, ds, x_km, y_km):
-        if not HAS_CTX:
-            print("contextily not available for basemap")
-            return
-
-        # Try to get lat/lon from dataset attrs first
-        lat = ds.attrs.get("radar_latitude", ds.attrs.get("origin_latitude"))
-        lon = ds.attrs.get("radar_longitude", ds.attrs.get("origin_longitude"))
-
-        if lat is None or lon is None:
-            radar_id = ds.attrs.get("radar", ds.attrs.get("radar_id", ""))
-            print(f"No radar location for {radar_id}")
-            return
-
-        lat, lon = float(lat), float(lon)
-        crs_str = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +x_0=0 +y_0=0 +datum=WGS84 +units=km"
-        ax.set_xlim(x_km.min(), x_km.max())
-        ax.set_ylim(y_km.min(), y_km.max())
-        try:
-            ctx.add_basemap(
-                ax,
-                crs=crs_str,
-                source=ctx.providers.OpenStreetMap.Mapnik,
-                alpha=0.6,
-                attribution=False,
-                zoom=8,
-                zorder=0,
-            )
-        except Exception as e:
-            logger.warning("Basemap unavailable: %s", e)
+        _add_basemap_fn(ax, ds, x_km, y_km)
 
     # ── Single update entry point ─────────────────────────────────────────────
 
@@ -1590,9 +2234,6 @@ class AdaptDashboard(tk.Tk):
         yi = int(np.argmin(np.abs(ds["y"].values - y_m)))
         cell_id = int(ds["cell_labels"].values[yi, xi])
         if cell_id <= 0:
-            self._clear_tracking_history()
-            self._clear_time_series()
-            fig.canvas.draw_idle()
             return
         repo = self._repo_root.get().strip()
         radar = self._radar.get().strip().upper()
@@ -1605,8 +2246,8 @@ class AdaptDashboard(tk.Tk):
                 from adapt.persistence.track_store import TrackStore
 
                 scan_time_dt = pd.Timestamp(self._current_scan_ts).to_pydatetime()
-                ts_obj = TrackStore(db_path, readonly=True)
-                scan_cells = ts_obj.get_cells_by_scan(self._current_run_id, scan_time_dt)
+                with contextlib.closing(TrackStore(db_path, readonly=True)) as _ts:
+                    scan_cells = _ts.get_cells_by_scan(self._current_run_id, scan_time_dt)
                 if not scan_cells.empty and "cell_label" in scan_cells.columns:
                     matched = scan_cells[scan_cells["cell_label"] == cell_id]
                     if not matched.empty:
@@ -1644,8 +2285,8 @@ class AdaptDashboard(tk.Tk):
             try:
                 from adapt.persistence.track_store import TrackStore
 
-                ts_obj = TrackStore(db_path, readonly=True)
-                history_df = ts_obj.get_track_history(self._current_run_id, str(cell_uid))
+                with contextlib.closing(TrackStore(db_path, readonly=True)) as _ts:
+                    history_df = _ts.get_track_history(self._current_run_id, str(cell_uid))
             except Exception:
                 logger.exception("Failed to load tracking history from track store")
 
@@ -1654,10 +2295,30 @@ class AdaptDashboard(tk.Tk):
             if df is not None and cell_uid is not None and "cell_uid" in df.columns:
                 history_df = df[df["cell_uid"] == cell_uid].copy()
 
-        self._clear_tracking_history()
-        self._selected_cell_uid = str(cell_uid) if cell_uid is not None else None
-        self._draw_tracking_history(ax_radar, history_df)
-        self._update_time_series(history_df)
+        uid_str = str(cell_uid) if cell_uid is not None else None
+        if uid_str is None:
+            return
+
+        if uid_str in self._selected_cells:
+            # Deselect: remove from selection and overlays
+            slot = self._selected_cells.pop(uid_str)
+            for artist in self._track_overlay.pop(uid_str, []):
+                with contextlib.suppress(Exception):
+                    artist.remove()
+        else:
+            # Select: assign color slot
+            slot = _next_free_color_slot(self._selected_cells)
+            if slot is None:
+                action = self._cfg.get("overflow_action", "ask")
+                if action == "ask":
+                    action = self._ask_overflow_action()
+                slot = _apply_overflow_action(action, self._selected_cells)
+                if slot is None:
+                    return  # user chose ignore
+            self._selected_cells[uid_str] = slot
+
+        self._redraw_overlays_on(ax_radar, self._current_nc_ds)
+        self._update_time_series_all()
         fig.canvas.draw_idle()
 
     def _draw_tracking_history(self, ax, history_df: pd.DataFrame | None = None) -> None:
@@ -1682,37 +2343,131 @@ class AdaptDashboard(tk.Tk):
         self._track_overlay = [line, dots, star]
 
     def _clear_tracking_history(self) -> None:
-        if self._track_overlay:
-            for artist in self._track_overlay:
+        for artists in self._track_overlay.values():
+            for artist in artists:
                 with contextlib.suppress(Exception):
                     artist.remove()
-            self._track_overlay = None
-        self._selected_cell_uid = None
+        self._track_overlay = {}
+        # _selected_cells intentionally NOT cleared; use Escape or empty-click to deselect
 
     # ── Time series panels ────────────────────────────────────────────────────
 
     @staticmethod
     def _style_ts_ax(ax, ylabel: str, title: str) -> None:
-        """Apply light-panel styling to a time-series axis (no x-axis work — handled centrally)."""
-        ax.set_facecolor("#f5f5f5")
-        ax.set_title(title, fontsize=8, color="#222222", pad=3)
-        ax.set_ylabel(ylabel, fontsize=7, color="#444444")
-        ax.yaxis.label.set_color("#444444")
-        ax.tick_params(axis="y", colors="#333333", labelsize=7, which="both")
-        for sp in ax.spines.values():
-            sp.set_color("#aaaaaa")
+        _style_ts_ax_fn(ax, ylabel, title)
 
     @staticmethod
     def _apply_time_axis(ax_bottom, axes) -> None:
-        """Apply shared time-axis formatting. Call after plotting, using bottom axis."""
-        ax_bottom.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax_bottom.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=10))
-        ax_bottom.tick_params(axis="x", colors="#333333", labelsize=8, rotation=30)
-        ax_bottom.set_xlabel("UTC", fontsize=8, color="#444444")
-        ax_bottom.xaxis.label.set_color("#444444")
-        for ax in axes[:-1]:
-            plt.setp(ax.get_xticklabels(), visible=False)
-            ax.tick_params(axis="x", colors="#aaaaaa", which="both")
+        _apply_time_axis_fn(ax_bottom, axes)
+
+    def _ask_overflow_action(self) -> str:
+        """Show popup and return 'ignore', 'replace_oldest', or 'wrap'."""
+        win = tk.Toplevel(self)
+        win.title("Too many tracks selected")
+        win.resizable(False, False)
+        win.grab_set()
+        result: list[str] = ["ignore"]
+
+        ttk.Label(
+            win,
+            text="All 7 color slots are in use. What should happen?",
+            padding=10,
+        ).pack()
+
+        def choose(action: str) -> None:
+            result[0] = action
+            win.destroy()
+
+        ttk.Button(win, text="Ignore this click", command=lambda: choose("ignore")).pack(
+            fill="x", padx=20, pady=4
+        )
+        ttk.Button(
+            win, text="Replace oldest selection", command=lambda: choose("replace_oldest")
+        ).pack(fill="x", padx=20, pady=4)
+        ttk.Button(win, text="Wrap color (may be ambiguous)", command=lambda: choose("wrap")).pack(
+            fill="x", padx=20, pady=(4, 12)
+        )
+
+        self.wait_window(win)
+        return result[0]
+
+    def _update_time_series_all(self) -> None:
+        """Re-draw all 3 time-series plots for all currently selected tracks."""
+        if self._ts_axes is None:
+            return
+        ax1, ax2, ax3 = self._ts_axes
+        for ax in (ax1, ax2, ax3):
+            ax.clear()
+
+        group_names = self._cfg.get("plot_assignments", ["Area", "Reflectivity", "ZDR"])
+        axes = [ax1, ax2, ax3]
+
+        repo = self._repo_root.get().strip()
+        radar = self._radar.get().strip().upper()
+        db_path = Path(repo) / radar / "catalog.db"
+        cur_t = (
+            pd.Timestamp(self._current_scan_ts, tz="UTC")
+            if self._current_scan_ts is not None
+            else None
+        )
+
+        for uid, slot in self._selected_cells.items():
+            color = self._color_slots[slot % len(self._color_slots)]
+            history_df = None
+            if self._current_run_id and db_path.exists():
+                try:
+                    from adapt.persistence.track_store import TrackStore
+
+                    with contextlib.closing(TrackStore(db_path, readonly=True)) as _ts:
+                        history_df = _ts.get_track_history(self._current_run_id, uid)
+                except Exception:
+                    logger.exception("Failed to load track history for %s", uid)
+            if history_df is None or history_df.empty:
+                df = self._current_cell_df
+                if df is not None and "cell_uid" in df.columns:
+                    history_df = df[df["cell_uid"] == uid].copy()
+            if history_df is None or history_df.empty:
+                continue
+
+            track_df = history_df.sort_values("scan_time")
+            t = pd.to_datetime(track_df["scan_time"], utc=True)
+
+            for ax, group_name in zip(axes, group_names, strict=False):
+                group = self._cfg.get("plot_groups", {}).get(group_name, {})
+                for var, style, label in zip(
+                    group.get("variables", []),
+                    group.get("styles", []),
+                    group.get("labels", []),
+                    strict=False,
+                ):
+                    if var not in track_df.columns:
+                        continue
+                    ax.plot(
+                        t,
+                        track_df[var],
+                        color=color,
+                        linestyle=style,
+                        linewidth=1.2,
+                        label=f"{uid[:4]} {label}",
+                    )
+
+        for ax, group_name in zip(axes, group_names, strict=False):
+            group = self._cfg.get("plot_groups", {}).get(group_name, {})
+            rich_title = _build_ts_title_fn(group_name, group)
+            self._style_ts_ax(ax, "", rich_title)
+
+        self._apply_time_axis(axes[-1], axes)
+        _draw_scan_marker_fn(tuple(axes), cur_t)
+        self._update_track_legend()
+
+        if self._canvas_refs is not None:
+            self._canvas_refs[0].draw_idle()
+
+    def _update_track_legend(self) -> None:
+        """Update the figure-level legend with colored patches for each selected track."""
+        if self._canvas_refs is None:
+            return
+        _update_track_legend_fn(self._canvas_refs[1], self._selected_cells, self._color_slots)
 
     def _update_time_series(self, history_df: pd.DataFrame | None = None) -> None:
         if self._ts_axes is None:
@@ -1724,7 +2479,8 @@ class AdaptDashboard(tk.Tk):
             if "cell_uid" in track_df.columns and track_df["cell_uid"].notna().any():
                 cell_uid = str(track_df["cell_uid"].dropna().iloc[0])
         else:
-            cell_uid = self._selected_cell_uid
+            # Fall back to first selected cell if no history_df provided
+            cell_uid = next(iter(self._selected_cells), None)
             if (
                 not cell_uid
                 or self._current_cell_df is None
@@ -1826,29 +2582,7 @@ class AdaptDashboard(tk.Tk):
     def _clear_time_series(self) -> None:
         if self._ts_axes is None:
             return
-        for ax, (ylabel, title) in zip(
-            self._ts_axes,
-            [("km²", "Area"), ("dBZ", "Reflectivity"), ("dB", "ZDR")],
-            strict=False,
-        ):
-            ax.cla()
-            self._style_ts_ax(ax, ylabel, title)
-            ax.text(
-                0.5,
-                0.5,
-                "click a cell",
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-                color="#888",
-                fontsize=8,
-            )
-        ax_extra = self._ts_axes[-1]
-        ax_extra.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax_extra.set_xlabel("UTC", fontsize=7, color="#444444")
-        ax_extra.tick_params(axis="x", colors="#333333", labelsize=7, rotation=30)
-        for ax in self._ts_axes[:-1]:
-            plt.setp(ax.get_xticklabels(), visible=False)
+        _clear_time_series_fn(self._ts_axes)
 
     # ── Escape: clear overlay ─────────────────────────────────────────────────
 
@@ -1859,12 +2593,14 @@ class AdaptDashboard(tk.Tk):
             _, fig, _, _ = self._canvas_refs
             fig.canvas.draw_idle()
 
-    def _clear_canvas(self):
+    def _clear_canvas(self, clear_selection: bool = True):
         self._nc_loop_running = False
         self._last_rendered_nc = None
         if hasattr(self, "btn_loop"):
             self.btn_loop.config(text="Show Loop")
 
+        if clear_selection:
+            self._selected_cells = {}
         self._clear_tracking_history()
         self._ts_axes = None
         self._colorbar = None
@@ -2017,12 +2753,15 @@ class AdaptDashboard(tk.Tk):
             try:
                 from adapt.persistence.track_store import TrackStore
 
-                ts_obj = TrackStore(db_path, readonly=True)
-                conn = ts_obj._connect()
-                rows = conn.execute(
-                    "SELECT * FROM cells_by_scan WHERE run_id=? ORDER BY scan_time, cell_uid",
-                    (self._current_run_id,),
-                ).fetchall()
+                with contextlib.closing(TrackStore(db_path, readonly=True)) as ts_obj:
+                    rows = (
+                        ts_obj._connect()
+                        .execute(
+                            "SELECT * FROM cells_by_scan WHERE run_id=? ORDER BY scan_time, cell_uid",
+                            (self._current_run_id,),
+                        )
+                        .fetchall()
+                    )
                 if rows:
                     df = pd.DataFrame([dict(r) for r in rows])
             except Exception:
