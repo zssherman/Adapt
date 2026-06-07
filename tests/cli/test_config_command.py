@@ -35,7 +35,9 @@ def test_adapt_config_handles_deleted_cwd(tmp_path, monkeypatch):
     _config_cmd(args2)
     assert out.exists()
     text = out.read_text()
-    assert f'base_dir: "{str(home)}"' in text
+    assert f"base_dir: {str(home)}" in text
+    # Full generated config carries every core section.
+    assert "tracker:" in text and "segmenter:" in text
 
 
 def test_adapt_config_sets_base_dir_to_output_parent(tmp_path):
@@ -46,4 +48,4 @@ def test_adapt_config_sets_base_dir_to_output_parent(tmp_path):
 
     assert out_path.exists()
     text = out_path.read_text()
-    assert f'base_dir: "{str(out_dir)}"' in text
+    assert f"base_dir: {str(out_dir)}" in text
