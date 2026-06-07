@@ -10,9 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from adapt.configuration.schemas.materialization import materialize_module_configs
 from adapt.configuration.schemas.resolve import resolve_config
 from adapt.configuration.schemas.user import UserConfig
+from adapt.execution.nodes.analysis import AnalysisModule
+from adapt.execution.nodes.detection import DetectModule
+from adapt.execution.nodes.ingest import LoadModule
+from adapt.execution.nodes.projection import ProjectionModule
+from adapt.execution.nodes.tracking import TrackingModule
 
 # =============================================================================
 # Configuration Fixtures (Pydantic-based)
@@ -99,33 +103,33 @@ def temp_dir():
 
 @pytest.fixture
 def detection_module_config(internal_config):
-    return materialize_module_configs(internal_config)["detection_config"]
+    return DetectModule.build_config(internal_config)
 
 
 @pytest.fixture
 def analysis_module_config(internal_config):
-    return materialize_module_configs(internal_config)["analysis_config"]
+    return AnalysisModule.build_config(internal_config)
 
 
 @pytest.fixture
 def projection_module_config(internal_config):
-    return materialize_module_configs(internal_config)["projection_config"]
+    return ProjectionModule.build_config(internal_config)
 
 
 @pytest.fixture
 def tracking_module_config(internal_config):
-    return materialize_module_configs(internal_config)["tracking_config"]
+    return TrackingModule.build_config(internal_config)
 
 
 @pytest.fixture
 def ingest_module_config(internal_config):
-    return materialize_module_configs(internal_config)["ingest_config"]
+    return LoadModule.build_config(internal_config)
 
 
 @pytest.fixture
 def make_detection_config(make_config):
     def _make(**kw):
-        return materialize_module_configs(make_config(**kw))["detection_config"]
+        return DetectModule.build_config(make_config(**kw))
 
     return _make
 
@@ -133,7 +137,7 @@ def make_detection_config(make_config):
 @pytest.fixture
 def make_analysis_config(make_config):
     def _make(**kw):
-        return materialize_module_configs(make_config(**kw))["analysis_config"]
+        return AnalysisModule.build_config(make_config(**kw))
 
     return _make
 
@@ -141,7 +145,7 @@ def make_analysis_config(make_config):
 @pytest.fixture
 def make_projection_config(make_config):
     def _make(**kw):
-        return materialize_module_configs(make_config(**kw))["projection_config"]
+        return ProjectionModule.build_config(make_config(**kw))
 
     return _make
 
@@ -149,7 +153,7 @@ def make_projection_config(make_config):
 @pytest.fixture
 def make_tracking_config(make_config):
     def _make(**kw):
-        return materialize_module_configs(make_config(**kw))["tracking_config"]
+        return TrackingModule.build_config(make_config(**kw))
 
     return _make
 
@@ -157,7 +161,7 @@ def make_tracking_config(make_config):
 @pytest.fixture
 def make_ingest_config(make_config):
     def _make(**kw):
-        return materialize_module_configs(make_config(**kw))["ingest_config"]
+        return LoadModule.build_config(make_config(**kw))
 
     return _make
 

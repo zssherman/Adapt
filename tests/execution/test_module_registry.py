@@ -4,6 +4,8 @@ Unit tests only — no IO, no radar data.
 All modules are lightweight stubs inheriting BaseModule.
 """
 
+from typing import ClassVar
+
 import pytest
 
 from adapt.execution.module_registry import ModuleRegistry
@@ -16,7 +18,7 @@ from adapt.modules.base import BaseModule
 
 class StubA(BaseModule):
     name = "stub_a"
-    inputs = []
+    inputs: ClassVar[list[str]] = []
     outputs = ["a_out"]
 
     def run(self, context):
@@ -43,8 +45,8 @@ class StubC(BaseModule):
 
 class EmptyNameModule(BaseModule):
     name = ""
-    inputs = []
-    outputs = []
+    inputs: ClassVar[list[str]] = []
+    outputs: ClassVar[list[str]] = []
 
     def run(self, context):
         return {}
