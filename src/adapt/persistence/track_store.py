@@ -18,10 +18,12 @@ import contextlib
 import logging
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+from adapt.utils.time import from_scan_iso, to_scan_iso
 
 __all__ = ["TrackStore"]
 
@@ -399,10 +401,8 @@ class TrackStore:
                     merge_targets.add(int(tcl))
 
         # Parse current scan time once for age computation
-        from datetime import datetime as _dt
-
         try:
-            scan_dt = _dt.strptime(scan_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+            scan_dt = from_scan_iso(scan_iso)
         except ValueError:
             scan_dt = None
 
@@ -421,9 +421,7 @@ class TrackStore:
                 and tid in first_seen_map
             ):
                 try:
-                    first_dt = _dt.strptime(first_seen_map[tid], "%Y-%m-%dT%H:%M:%SZ").replace(
-                        tzinfo=UTC
-                    )
+                    first_dt = from_scan_iso(first_seen_map[tid])
                     age_seconds = max(0.0, (scan_dt - first_dt).total_seconds())
                 except ValueError:
                     pass
@@ -701,9 +699,9 @@ class TrackStore:
 
 
 def _to_iso(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Single authoritative scan-time format lives in adapt.utils.time.to_scan_iso
+    # so cells_by_scan and every derived module table share one join-key string.
+    return to_scan_iso(dt)
 
 
 def _infer_sql_type(col: str) -> str:
