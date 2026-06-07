@@ -10,10 +10,10 @@ import xarray as xr
 
 from adapt.configuration.schemas.directories import setup_output_directories
 from adapt.configuration.schemas.internal import InternalConfig
-from adapt.configuration.schemas.materialization import materialize_module_configs
 from adapt.configuration.schemas.param import ParamConfig
 from adapt.configuration.schemas.resolve import resolve_config
 from adapt.configuration.schemas.user import UserConfig
+from adapt.execution.nodes.ingest import LoadModule
 
 
 # ---- AwsNexradDownloader fixtures ----
@@ -285,8 +285,8 @@ def radar_config(temp_dir) -> InternalConfig:
 
 @pytest.fixture
 def ingest_module_config_from_radar(radar_config):
-    """IngestModuleConfig derived from radar_config."""
-    return materialize_module_configs(radar_config)["ingest_config"]
+    """IngestConfig derived from radar_config."""
+    return LoadModule.build_config(radar_config)
 
 
 @pytest.fixture

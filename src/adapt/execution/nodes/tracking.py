@@ -4,6 +4,7 @@
 from adapt.contracts import check_cell_events, check_projected_ds, check_tracked_cells
 from adapt.execution.module_registry import registry
 from adapt.modules.base import BaseModule
+from adapt.modules.tracking.config import TrackingConfig
 from adapt.modules.tracking.module import RadarCellTracker
 
 
@@ -33,7 +34,9 @@ class TrackingModule(BaseModule):
     """
 
     name = "tracking"
-    pipeline_phase = 2
+    summary = "link cells across scans"
+    required_history = 2
+    pipeline_phase = 0
     inputs = ["projected_ds", "cell_stats", "tracking_config", "scan_time"]
     outputs = ["tracked_cells", "cell_events"]
     input_contracts = {"projected_ds": check_projected_ds}
@@ -41,6 +44,25 @@ class TrackingModule(BaseModule):
         "tracked_cells": check_tracked_cells,
         "cell_events": check_cell_events,
     }
+    config_class = TrackingConfig
+
+    @classmethod
+    def build_config(cls, cfg) -> TrackingConfig:
+        return TrackingConfig(
+            match_cost=cfg.tracker.match_cost_threshold,
+            keep_cost=cfg.tracker.keep_cost_threshold,
+            unmatch_cost=cfg.tracker.unmatch_cost_threshold,
+            split_overlap=cfg.tracker.split_overlap_threshold,
+            core_reflectivity_threshold=cfg.tracker.core_reflectivity_threshold,
+            uid_time_step_s=cfg.tracker.cell_uid.time_step_s,
+            uid_latlon_step_deg=cfg.tracker.cell_uid.latlon_step_deg,
+            uid_area_step_km2=cfg.tracker.cell_uid.area_step_km2,
+            uid_width=cfg.tracker.cell_uid.width,
+            reflectivity_var=cfg.global_.var_names.reflectivity,
+            labels_var=cfg.global_.var_names.cell_labels,
+            max_gap_minutes=cfg.tracker.max_gap_minutes,
+            expected_speed_ms=cfg.tracker.expected_speed_ms,
+        )
 
     def __init__(self) -> None:
         self._tracker: RadarCellTracker | None = None

@@ -37,6 +37,7 @@ def _discover_module_packages() -> list[str]:
 def _source_files(package_name: str) -> list[Path]:
     """Return all .py files belonging to a package."""
     mod = importlib.import_module(package_name)
+    assert mod.__file__ is not None
     pkg_dir = Path(mod.__file__).parent
     return list(pkg_dir.rglob("*.py"))
 
@@ -115,4 +116,29 @@ def test_module_does_not_import_execution_or_runtime(pkg: str) -> None:
     assert not violations, (
         f"\n{pkg} imports from layers above it — "
         "modules must only depend on contracts/ and utils/:\n" + "\n".join(violations)
+    )
+
+
+# ── Canonical scan-time serialization (single source of truth) ────────────────
+# scan_time is the cross-table join key: cells_by_scan and every derived module
+# table must store the identical string, or joins silently fail. The format lives
+# in exactly one function — adapt.utils.time.to_scan_iso. This fitness function
+# fails if any other code formats scan-time independently (drift = broken joins).
+
+_SCAN_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+_SRC_ADAPT = Path(__file__).parents[1] / "src" / "adapt"
+
+
+def test_scan_time_format_is_defined_in_exactly_one_place() -> None:
+    """The scan-time join-key format may appear only in adapt.utils.time."""
+    offenders: list[str] = []
+    for py_file in _SRC_ADAPT.rglob("*.py"):
+        if _SCAN_TIME_FORMAT in py_file.read_text():
+            offenders.append(str(py_file.relative_to(_SRC_ADAPT)))
+
+    assert offenders == ["utils/time.py"], (
+        "scan-time format must be centralized in adapt.utils.time.to_scan_iso — "
+        f"found the literal {_SCAN_TIME_FORMAT!r} in: {offenders}. "
+        "Serialize scan_time via to_scan_iso (or let ModuleOutputWriter do it); "
+        "never hardcode the format, or derived tables will not join cells_by_scan."
     )

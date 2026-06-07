@@ -1,0 +1,11 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 60%
+        threshold: 2%
+  ignore:
+    - "src/adapt/gui/"
+    - "src/adapt/visualization/"
+    - "src/adapt/cli.py"
+    - "src/adapt/api/"

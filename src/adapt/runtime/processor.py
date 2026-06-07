@@ -29,12 +29,12 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from adapt.configuration.schemas.materialization import materialize_module_configs
+from adapt.configuration.schemas.module_resolver import resolve_module_configs
 from adapt.contracts import ContractViolation
 from adapt.execution.graph.builder import GraphBuilder
 from adapt.execution.graph.executor import GraphExecutor
 from adapt.execution.module_registry import registry
-from adapt.execution.pipeline_builder import _ensure_modules_registered
+from adapt.execution.pipeline_builder import _ensure_modules_registered, resolve_enabled_modules
 from adapt.persistence import DataRepository, ProductType
 from adapt.persistence.track_store import TrackStore
 from adapt.persistence.writer import RepositoryWriter
@@ -100,31 +100,51 @@ class RadarProcessor(threading.Thread):
                 "Initialize it in the orchestrator before creating the processor."
             )
 
-        # Build one execution graph per pipeline phase. Module instances are shared
-        # (stateful projector/tracker state persists across files).
+        # Build one execution graph per required_history value.
+        # Module instances are shared (stateful projector/tracker persists across files).
         _ensure_modules_registered(config.extensions)
         modules = registry.create_modules()
+        modules = resolve_enabled_modules(
+            modules,
+            modules=config.modules,
+            only=config.only_modules,
+            exclude=config.exclude_modules,
+        )
+        logger.info("Enabled modules: [%s]", ", ".join(m.name for m in modules))
 
-        phase_groups: dict[int, list] = {}
-        for m in modules:
-            phase_groups.setdefault(m.pipeline_phase, []).append(m)
+        in_pipeline = [m for m in modules if m.pipeline_phase != 3]
+        post_persist = [m for m in modules if m.pipeline_phase == 3]
+
+        history_groups: dict[int, list] = {}
+        for m in in_pipeline:
+            history_groups.setdefault(m.required_history, []).append(m)
 
         self._executors: dict[int, GraphExecutor] = {
-            phase: GraphExecutor(GraphBuilder(mods).build())
-            for phase, mods in sorted(phase_groups.items())
+            req: GraphExecutor(GraphBuilder(mods).build())
+            for req, mods in sorted(history_groups.items())
         }
 
-        self._module_configs = materialize_module_configs(config)
+        self._post_modules = post_persist
+        self._post_executor: GraphExecutor | None = (
+            GraphExecutor(GraphBuilder(post_persist).build()) if post_persist else None
+        )
 
-        for phase, mods in sorted(phase_groups.items()):
+        self._module_configs = resolve_module_configs(config)
+
+        for req, mods in sorted(history_groups.items()):
             logger.info(
-                "RadarProcessor phase=%d: [%s]",
-                phase,
+                "RadarProcessor required_history=%d: [%s]",
+                req,
                 ", ".join(m.name for m in mods),
             )
+        if post_persist:
+            logger.info(
+                "RadarProcessor post-persistence: [%s]",
+                ", ".join(m.name for m in post_persist),
+            )
 
-        # Frame pairing orchestration state
-        self._segmented_history: list[tuple[str, object, datetime | None]] = []
+        # Rolling scan history (replaces per-phase segmented_history)
+        self._scan_history: list[dict] = []
         self._max_history = config.processor.max_history
         self._max_time_gap_minutes = config.projector.max_time_interval_minutes
         self._last_skipped = False
@@ -213,23 +233,62 @@ class RadarProcessor(threading.Thread):
         logger.info("Processing: %s", Path(filepath).name)
 
         try:
-            # ── Phase 1: ingest + detection ────────────────────────────────
             t0 = time.perf_counter()
-            base_ctx = {
+
+            # ── Build base context with all module configs ─────────────────
+            base_ctx: dict = {
                 "nexrad_file": filepath,
-                "ingest_config": self._module_configs["ingest_config"],
-                "detection_config": self._module_configs["detection_config"],
+                **self._module_configs,
                 "output_dirs": self.output_dirs,
             }
             if self.repository:
                 base_ctx["repository"] = self.repository
 
-            frame_ctx = self._executors[1].run(base_ctx)
-            single_s = time.perf_counter() - t0
+            # ── Rolling window: run all executor groups in history-size order
+            # required_history=N means N scans total (N-1 prior + current).
+            # Skip if fewer than N-1 prior scans are available.
+            result: dict = {}
+            for req_hist, executor in sorted(self._executors.items()):
+                prior_needed = req_hist - 1
+                if len(self._scan_history) < prior_needed:
+                    logger.info(
+                        "Waiting for history: need %d prior scans, have %d (%s)",
+                        prior_needed,
+                        len(self._scan_history),
+                        Path(filepath).name,
+                    )
+                    continue
+
+                if req_hist > 1:
+                    # Validate time gap before running multi-scan modules
+                    current_scan_time = result.get("scan_time")
+                    time_gap_valid, time_gap_minutes = self._validate_time_gap(current_scan_time)
+                    if not time_gap_valid:
+                        logger.warning(
+                            "Time gap %.1f min > %.1f min, skipping multi-scan modules.",
+                            time_gap_minutes,
+                            self._max_time_gap_minutes,
+                        )
+                        continue
+
+                ctx = {**base_ctx, **result}
+                if req_hist > 1:
+                    # Build scan_history: (N-1) prior entries + current partial context
+                    prior = self._scan_history[-prior_needed:] if prior_needed else []
+                    ctx["scan_history"] = list(prior) + [{**base_ctx, **result}]
+                group_result = executor.run(ctx)
+                result.update(group_result)
+
+            scan_time = result.get("scan_time") or base_ctx.get("scan_time")
+            # Normalize once to tz-aware UTC so persistence (artifact registration),
+            # the enrich 3D-grid read, and the enrich module all use one representation.
+            if scan_time is not None and scan_time.tzinfo is None:
+                scan_time = scan_time.replace(tzinfo=UTC)
+            elapsed_s = time.perf_counter() - t0
 
             # Register radar location from first scan (idempotent after that)
             if self.repository:
-                grid_ds = frame_ctx.get("grid_ds") or frame_ctx.get("grid_ds_2d")
+                grid_ds = result.get("grid_ds") or result.get("grid_ds_2d")
                 if grid_ds is not None:
                     lat = grid_ds.attrs.get("radar_latitude")
                     lon = grid_ds.attrs.get("radar_longitude")
@@ -238,86 +297,37 @@ class RadarProcessor(threading.Thread):
                             self.config.downloader.radar, lat=float(lat), lon=float(lon)
                         )
 
-            scan_time = frame_ctx.get("scan_time")
-
-            # ── Phase 2: accumulate frame history ──────────────────────────
-            self._segmented_history.append((filepath, frame_ctx["segmented_ds"], scan_time))
-            if len(self._segmented_history) > self._max_history:
-                self._segmented_history.pop(0)
-
-            if len(self._segmented_history) < 2:
-                logger.info(
-                    "Segmented %s, waiting for pair | %.1fs",
-                    Path(filepath).name,
-                    single_s,
-                )
-                return True
-
-            # ── Phase 3: validate time gap ─────────────────────────────────
-            time_gap_valid, time_gap_minutes = self._validate_time_gap()
-            if not time_gap_valid:
-                logger.warning(
-                    "Time gap %.1f min > %.1f min, discarding oldest frame.",
-                    time_gap_minutes,
-                    self._max_time_gap_minutes,
-                )
-                return True
-
-            logger.info(
-                "Processing pair: %s + %s (gap: %.1f min)",
-                Path(self._segmented_history[0][0]).name,
-                Path(self._segmented_history[1][0]).name,
-                time_gap_minutes,
-            )
-
-            # ── Phase 4: projection + analysis + tracking ──────────────────
-            t_proj = time.perf_counter()
-            pair_ctx = {
-                **frame_ctx,
-                "projection_config": self._module_configs["projection_config"],
-                "analysis_config": self._module_configs["analysis_config"],
-                "tracking_config": self._module_configs["tracking_config"],
-                "output_dirs": self.output_dirs,
-                "dataset_history": [(fp, ds) for fp, ds, _ in self._segmented_history],
-            }
-            if self.repository:
-                pair_ctx["repository"] = self.repository
-
-            result = self._executors[2].run(pair_ctx)
-            project_s = time.perf_counter() - t_proj
+            # ── Accumulate scan in rolling history ─────────────────────────
+            self._scan_history.append({**base_ctx, **result})
+            if len(self._scan_history) > self._max_history:
+                self._scan_history.pop(0)
 
             # ── Persist results ────────────────────────────────────────────
             if self.repository and result:
                 self._save_results(result, scan_time)
 
-            # ── Phase 3: post-persistence extension modules ────────────────
-            # Extensions read from the data store independently via the
-            # persistence reader/writer — no in-memory objects are passed.
-            if 3 in self._executors and self.repository:
-                post_ctx = {
-                    "run_id": self.repository.run_id,
-                    "scan_time": scan_time,
-                    "catalog_path": self.repository.catalog.db_path,
-                    "repository": self.repository,
-                }
-                self._executors[3].run(post_ctx)
+            # ── Post-persistence enrichment (pipeline_phase=3) ─────────────
+            # Enrich modules index on (scan_time, cell_uid); they only run once
+            # tracking has committed cell_uid for this scan.
+            if self._post_executor is not None and self._should_run_enrichment(result):
+                post_ctx = self._build_enrich_context(result, scan_time)
+                ext_result = self._post_executor.run(post_ctx)
+                self._save_enrichment_results(ext_result)
 
             cell_stats = result.get("cell_stats")
             n_cells = len(cell_stats) if cell_stats is not None else 0
             logger.info(
-                "Processed pair: %d cells | %.1fs proj%s",
+                "Processed: %d cells | %.1fs%s",
                 n_cells,
-                project_s,
+                elapsed_s,
                 f" queue={queue_wait_s:.1f}s" if queue_wait_s is not None else "",
             )
 
             if tracker:
-                timings = {"project_seconds": project_s}
+                timings = {"project_seconds": elapsed_s}
                 if queue_wait_s is not None:
                     timings["queue_wait_seconds"] = queue_wait_s
-                for fp, _, _ in self._segmented_history:
-                    fid = Path(fp).stem
-                    tracker.mark_stage_complete(fid, "analyzed", num_cells=n_cells, timings=timings)
+                tracker.mark_stage_complete(file_id, "analyzed", num_cells=n_cells, timings=timings)
 
             return True
 
@@ -334,14 +344,79 @@ class RadarProcessor(threading.Thread):
                 tracker.mark_stage_complete(file_id, "analyzed", error=str(e))
             return False
 
+    # ── Enrichment (post-persistence) helpers ─────────────────────────────────
+
+    def _should_run_enrichment(self, result: dict) -> bool:
+        """True when enrich modules may run: they require committed cell_uid."""
+        if self._post_executor is None or not self.repository:
+            return False
+        tracked_cells = result.get("tracked_cells")
+        return (
+            tracked_cells is not None
+            and not tracked_cells.empty
+            and "cell_uid" in tracked_cells.columns
+        )
+
+    def _build_enrich_context(self, result: dict, scan_time) -> dict:
+        """Assemble the post-persistence context, injecting stored artifacts on demand.
+
+        Modules never touch storage. If any enrich module declares ``grid_ds_3d``
+        as an input, the processor reads the registered 3D gridded NetCDF for this
+        scan and injects it. Other declared storage-backed inputs follow the same
+        pattern as they are added.
+        """
+        assert self.repository is not None
+        ctx = {
+            **result,
+            "run_id": self.repository.run_id,
+            "scan_time": scan_time,
+            "catalog_path": self.repository.catalog.db_path,
+            "repository": self.repository,
+        }
+        if any("grid_ds_3d" in m.inputs for m in self._post_modules):
+            grid_3d = self._read_grid_3d(scan_time)
+            if grid_3d is not None:
+                ctx["grid_ds_3d"] = grid_3d
+        return ctx
+
+    def _read_grid_3d(self, scan_time):
+        """Read the registered 3D gridded NetCDF for this scan, or None if absent."""
+        assert self.repository is not None
+        # The artifact is registered with a tz-aware (UTC) scan_time; normalize the
+        # query the same way so the catalog's isoformat comparison matches.
+        if scan_time is not None and scan_time.tzinfo is None:
+            scan_time = scan_time.replace(tzinfo=UTC)
+        artifacts = self.repository.query(
+            product_type=ProductType.GRIDDED_NC, time_range=(scan_time, scan_time)
+        )
+        if not artifacts:
+            return None
+        return self.repository.open_dataset(artifacts[0]["artifact_id"])
+
+    def _save_enrichment_results(self, ext_result: dict) -> None:
+        """Write each enrich module's declared output table from its returned DataFrame."""
+        from adapt.persistence.module_output import ModuleOutputWriter
+
+        assert self.repository is not None
+        for module in self._post_modules:
+            spec = module.output_table
+            if spec is None or not module.outputs:
+                continue
+            df = ext_result.get(module.outputs[0])
+            if df is None or getattr(df, "empty", True):
+                continue
+            ModuleOutputWriter(self.repository.catalog.db_path, spec).write(df)
+
     # ── Frame pairing helpers ─────────────────────────────────────────────────
 
-    def _validate_time_gap(self):
-        """Return (valid, gap_minutes) for the two frames in history."""
-        if len(self._segmented_history) < 2:
+    def _validate_time_gap(self, current_scan_time=None):
+        """Return (valid, gap_minutes) between the most recent history entry and current scan."""
+        if not self._scan_history:
             return False, 0.0
-        time1 = self._segmented_history[0][2]
-        time2 = self._segmented_history[1][2]
+        time1 = self._scan_history[-1].get("scan_time")
+        time2 = current_scan_time
+        if time1 is None or time2 is None:
+            return False, 0.0
         gap_minutes = (time2 - time1).total_seconds() / 60.0
         return abs(gap_minutes) <= self._max_time_gap_minutes, gap_minutes
 
@@ -387,9 +462,21 @@ class RadarProcessor(threading.Thread):
         if scan_time is not None and scan_time.tzinfo is None:
             scan_time = scan_time.replace(tzinfo=UTC)
 
+        # Register the loader-written 3D gridded NetCDF as a queryable artifact so
+        # enrich modules can open it by scan_time. The loader wrote the file; the
+        # processor (which owns I/O) registers it in the catalog.
+        grid_nc_path = result.get("grid_nc_path")
+        if grid_nc_path and Path(grid_nc_path).exists():
+            self.repository.register_artifact(
+                product_type=ProductType.GRIDDED_NC,
+                file_path=grid_nc_path,
+                scan_time=scan_time,
+                producer="ingest",
+            )
+
         projected_ds = result.get("projected_ds")
         if projected_ds is not None:
-            filepath = self._segmented_history[-1][0]
+            filepath = self._scan_history[-1].get("nexrad_file", "") if self._scan_history else ""
             self._save_analysis_netcdf(projected_ds, filepath, scan_time)
 
         writer = RepositoryWriter(self.repository)

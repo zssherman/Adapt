@@ -9,11 +9,66 @@ All tests use synthetic numpy/Python scalars — no radar files, no IO.
 from datetime import UTC, datetime
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from adapt.utils.time import normalize_time_scalar
+from adapt.utils.time import (
+    from_scan_iso,
+    normalize_time_scalar,
+    to_scan_iso,
+    to_scan_unix,
+)
 
 pytestmark = pytest.mark.unit
+
+
+class TestToScanIso:
+    """Canonical scan-time string — the cross-table join key (matches _to_iso)."""
+
+    def test_naive_datetime_treated_as_utc(self):
+        assert to_scan_iso(datetime(2024, 1, 1, 12, 0, 0)) == "2024-01-01T12:00:00Z"
+
+    def test_aware_utc_datetime(self):
+        assert to_scan_iso(datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)) == "2024-01-01T12:00:00Z"
+
+    def test_pandas_timestamp(self):
+        assert to_scan_iso(pd.Timestamp("2024-01-01T12:00:00")) == "2024-01-01T12:00:00Z"
+
+    def test_numpy_datetime64(self):
+        assert to_scan_iso(np.datetime64("2024-01-01T12:00:00")) == "2024-01-01T12:00:00Z"
+
+
+class TestFromScanIso:
+    """Inverse of to_scan_iso — parse the canonical string back to a UTC datetime."""
+
+    def test_parses_to_aware_utc(self):
+        dt = from_scan_iso("2024-01-01T12:00:00Z")
+        assert dt == datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    def test_round_trips(self):
+        original = datetime(2024, 6, 15, 8, 30, 0, tzinfo=UTC)
+        assert from_scan_iso(to_scan_iso(original)) == original
+
+
+class TestToScanUnix:
+    """Machine-readable epoch seconds — the SAME instant as to_scan_iso, always."""
+
+    def test_unix_seconds_for_known_utc(self):
+        dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        assert to_scan_unix(dt) == int(dt.timestamp())
+
+    def test_naive_treated_as_utc(self):
+        assert to_scan_unix(datetime(2024, 1, 1, 12, 0, 0)) == int(
+            datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC).timestamp()
+        )
+
+    def test_iso_and_unix_describe_same_instant(self):
+        dt = datetime(2024, 6, 15, 8, 30, 0)
+        assert from_scan_iso(to_scan_iso(dt)).timestamp() == to_scan_unix(dt)
+
+    def test_pandas_timestamp(self):
+        ts = pd.Timestamp("2024-01-01T12:00:00")
+        assert to_scan_unix(ts) == int(datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC).timestamp())
 
 
 class TestNormalizeTimeScalar:

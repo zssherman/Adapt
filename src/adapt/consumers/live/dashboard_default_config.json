@@ -1,0 +1,41 @@
+{
+  "colors": [
+    "#e41a1c",
+    "#377eb8",
+    "#4daf4a",
+    "#984ea3",
+    "#ff7f00",
+    "#a65628",
+    "#f781bf"
+  ],
+  "plot_groups": {
+    "Area": {
+      "variables": ["cell_area_sqkm", "area_40dbz_km2"],
+      "styles": ["solid", "dashed"],
+      "labels": ["Cell area (km²)", "Core area (km²)"]
+    },
+    "Reflectivity": {
+      "variables": ["radar_reflectivity_max", "radar_reflectivity_mean"],
+      "styles": ["solid", "dashed"],
+      "labels": ["Max dBZ", "Mean dBZ"]
+    },
+    "ZDR": {
+      "variables": ["radar_differential_reflectivity_max"],
+      "styles": ["solid"],
+      "labels": ["Max ZDR (dB)"]
+    },
+    "Velocity": {
+      "variables": ["radar_velocity_max", "radar_velocity_mean"],
+      "styles": ["solid", "dashed"],
+      "labels": ["Max vel (m/s)", "Mean vel (m/s)"]
+    },
+    "Cloud Top Height": {
+      "variables": ["cell_top_m", "cell_eth20_top_max"],
+      "styles": ["solid", "dashed"],
+      "labels": ["Echo top (m)", "20 dBZ top (m)"]
+    }
+  },
+  "plot_assignments": ["Area", "Reflectivity", "ZDR"],
+  "poll_ms": 10000,
+  "overflow_action": "ask"
+}

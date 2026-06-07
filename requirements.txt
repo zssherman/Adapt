@@ -1,0 +1,41 @@
+# Core processing
+numpy
+xarray
+pandas
+pydantic>=2.0
+scipy
+
+# NEXRAD & Radar
+arm_pyart
+nexradaws
+
+# Image processing
+opencv-python
+scikit-image
+
+# Data I/O
+netCDF4
+h5py
+pyarrow  # For parquet export
+pyyaml   # For YAML config files
+
+# Visualization
+matplotlib
+cartopy>=0.21
+contextily
+pyproj
+
+# GUI
+pillow   # For PNG display in dashboard
+
+# Utilities
+tqdm
+
+# Testing
+pytest>=7.0
+pytest-cov
+
+# Documentation (for GitHub Actions)
+sphinx>=4.0
+sphinx-rtd-theme>=1.0
+sphinx-autodoc-typehints

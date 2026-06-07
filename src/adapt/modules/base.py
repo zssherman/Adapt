@@ -48,11 +48,70 @@ class BaseModule(ABC):
     """
 
     name: ClassVar[str] = ""
+    summary: ClassVar[str] = ""  # one-line role, shown as a config.yaml module comment
     inputs: ClassVar[list[str]] = []
     outputs: ClassVar[list[str]] = []
     input_contracts: ClassVar[dict[str, Callable[[Any], None]]] = {}
     output_contracts: ClassVar[dict[str, Callable[[Any], None]]] = {}
-    pipeline_phase: ClassVar[int] = 1
+    required_history: ClassVar[int] = 1
+    pipeline_phase: ClassVar[int] = 0
+    config_class: ClassVar[type | None] = None
+    output_table: ClassVar[Any | None] = None
+    injected_global_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def module_summary(cls) -> str:
+        """One-line role for the config.yaml ``modules:`` list comment.
+
+        Prefers the explicit ``summary`` ClassVar, then the first non-empty line of
+        the class docstring, falling back to the module ``name``.
+        """
+        if cls.summary:
+            return cls.summary
+        for line in (cls.__doc__ or "").strip().splitlines():
+            if line.strip():
+                return line.strip()
+        return cls.name
+
+    @classmethod
+    def default_params(cls) -> dict[str, Any]:
+        """Owned, user-tunable defaults for this module.
+
+        Sourced from ``config_class`` field defaults — the single place defaults
+        live — excluding any field listed in ``injected_global_fields`` (those are
+        filled from the shared global section by ``build_config``). Returns ``{}``
+        when the module declares no ``config_class``. Feeds dynamic config.yaml
+        generation so a new module's params appear without editing any central file.
+        """
+        if cls.config_class is None:
+            return {}
+        return {
+            name: field.default
+            for name, field in cls.config_class.model_fields.items()  # type: ignore[attr-defined]
+            if name not in cls.injected_global_fields
+        }
+
+    @classmethod
+    def param_descriptions(cls) -> dict[str, str]:
+        """Map owned param name -> ``Field`` description (for config.yaml comments)."""
+        if cls.config_class is None:
+            return {}
+        return {
+            name: (field.description or "")
+            for name, field in cls.config_class.model_fields.items()  # type: ignore[attr-defined]
+            if name not in cls.injected_global_fields
+        }
+
+    @classmethod
+    def build_config(cls, internal_config: Any) -> Any | None:
+        """Build this module's frozen config by slicing the resolved InternalConfig.
+
+        The module decides what it needs: global values, its own section, and
+        (rarely) a cross-reference to another section. Returns None when the
+        module needs no config. Core modules override this with the slicing
+        logic; the config engine calls it once per registered module at startup.
+        """
+        return None
 
     @abstractmethod
     def run(self, context: dict) -> dict:

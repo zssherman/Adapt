@@ -3,6 +3,7 @@
 
 from adapt.contracts import check_cell_adjacency, check_cell_stats
 from adapt.execution.module_registry import registry
+from adapt.modules.analysis.config import AnalysisConfig
 from adapt.modules.analysis.module import RadarCellAnalyzer
 from adapt.modules.base import BaseModule
 
@@ -32,13 +33,28 @@ class AnalysisModule(BaseModule):
     """
 
     name = "analysis"
-    pipeline_phase = 2
+    summary = "2D per-cell statistics"
+    required_history = 2
+    pipeline_phase = 0
     inputs = ["projected_ds", "analysis_config", "scan_time"]
     outputs = ["cell_stats", "cell_adjacency"]
     output_contracts = {
         "cell_stats": check_cell_stats,
         "cell_adjacency": check_cell_adjacency,
     }
+    config_class = AnalysisConfig
+
+    @classmethod
+    def build_config(cls, cfg) -> AnalysisConfig:
+        return AnalysisConfig(
+            radar_variables=tuple(cfg.analyzer.radar_variables),
+            exclude_fields=tuple(cfg.analyzer.exclude_fields),
+            adjacency_min_touching=cfg.analyzer.adjacency_min_touching_boundary_pixels,
+            max_projection_steps=cfg.projector.max_projection_steps,
+            reflectivity_var=cfg.global_.var_names.reflectivity,
+            labels_var=cfg.global_.var_names.cell_labels,
+            z_level=cfg.global_.z_level,
+        )
 
     def __init__(self) -> None:
         self._analyzer: RadarCellAnalyzer | None = None

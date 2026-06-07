@@ -56,6 +56,8 @@ class CLIConfig(AdaptBaseModel):
         default=None,
         description="Optional run ID for continuation (format: YYYYMONDD-HHMM-RADAR)",
     )
+    only_modules: list[str] | None = None
+    exclude_modules: list[str] | None = None
 
     @model_validator(mode="after")
     def infer_historical_mode_from_times(self):
@@ -101,6 +103,11 @@ class CLIConfig(AdaptBaseModel):
 
         if self.log_level is not None:
             overrides["logging"] = {"level": self.log_level}
+
+        if self.only_modules is not None:
+            overrides["only_modules"] = self.only_modules
+        if self.exclude_modules is not None:
+            overrides["exclude_modules"] = self.exclude_modules
 
         # base_dir handled separately by setup_output_directories
 

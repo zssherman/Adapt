@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from adapt.gui.dashboard import _centroid_track_to_km
+from adapt.consumers.live.dashboard import _centroid_track_to_km
 
 pytestmark = pytest.mark.unit
 

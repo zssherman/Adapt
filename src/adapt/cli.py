@@ -125,6 +125,20 @@ def _build_run_nexrad_parser(sub: argparse.ArgumentParser) -> None:
         help="Display plots in a live window",
     )
     sub.add_argument(
+        "--only",
+        dest="only_modules",
+        default=None,
+        help="Run only these pipeline modules (comma-separated node names). "
+        "Mutually exclusive with --not.",
+    )
+    sub.add_argument(
+        "--not",
+        dest="exclude_modules",
+        default=None,
+        help="Run all modules except these (comma-separated node names). "
+        "Mutually exclusive with --only.",
+    )
+    sub.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -134,6 +148,8 @@ def _build_run_nexrad_parser(sub: argparse.ArgumentParser) -> None:
 
 def _run_nexrad(args: argparse.Namespace) -> None:
     """Execute the NEXRAD processing pipeline."""
+    if getattr(args, "only_modules", None) and getattr(args, "exclude_modules", None):
+        raise SystemExit("error: --only and --not are mutually exclusive")
     _check_single_instance()
     _write_pid()
 
@@ -237,63 +253,6 @@ def _run_nexrad(args: argparse.Namespace) -> None:
 # Sub-command: config  (generate config.yaml template)
 # ---------------------------------------------------------------------------
 
-_CONFIG_TEMPLATE = """\
-# Adapt Pipeline Configuration
-# Generated: {timestamp}
-#
-# Usage:
-#   adapt run-nexrad config.yaml --radar KLOT --mode realtime
-#   adapt run-nexrad config.yaml --radar KDIX --mode historical \\
-#       --start-time 2025-03-05T15:00:00Z --end-time 2025-03-05T18:00:00Z
-#
-# All settings below override the built-in defaults for given run.
-# CLI options (e.g. --radar, --mode) take precedence over config file values.
-
-# --------------------------------------------------------------------------
-# PIPELINE TARGET
-# --------------------------------------------------------------------------
-radar: KHTX                 # NWS NEXRAD radar ID (e.g. KLOT, KHTX, KDIX)
-mode: realtime              # "realtime" or "historical"
-base_dir: "{base_dir}"                # Output directory (override with --base-dir)
-
-# --------------------------------------------------------------------------
-# REALTIME MODE
-# --------------------------------------------------------------------------
-latest_files: 5             # Number of latest AWS files to keep
-latest_minutes: 60          # Rolling window for file selection (minutes)
-poll_interval_sec: 30       # Seconds between AWS polls
-
-# --------------------------------------------------------------------------
-# HISTORICAL MODE  (uncomment start_time / end_time to activate)
-# --------------------------------------------------------------------------
-# start_time: "2025-03-05T15:00:00Z"
-# end_time:   "2025-03-05T18:00:00Z"
-
-# --------------------------------------------------------------------------
-# GRID  (Cartesian regridding)
-# --------------------------------------------------------------------------
-grid_shape: [41, 301, 301]  # [z, y, x] number of grid points
-grid_limits:
-  - [0, 20000]              # z: 0-20 km altitude (metres)
-  - [-150000, 150000]       # y: +-150 km south-north (metres)
-  - [-150000, 150000]       # x: +-150 km west-east  (metres)
-
-# --------------------------------------------------------------------------
-# CELL DETECTION
-# --------------------------------------------------------------------------
-z_level: 2000               # Analysis altitude in metres above radar
-threshold: 40               # dBZ threshold for cell detection
-segmentation_method: threshold
-min_cellsize_gridpoint: 5   # Minimum cell area (grid points)
-# max_cellsize_gridpoint: null   # No upper limit (comment out to disable)
-
-# --------------------------------------------------------------------------
-# CELL PROJECTION  (optical-flow motion tracking)
-# --------------------------------------------------------------------------
-projection_method: adapt_default   # Optical-flow forward-projected hull
-max_projection_steps: 5
-"""
-
 
 def _build_config_parser(sub: argparse.ArgumentParser) -> None:
     sub.add_argument(
@@ -303,11 +262,22 @@ def _build_config_parser(sub: argparse.ArgumentParser) -> None:
         help="Path where config.yaml will be written. "
         "Defaults to ./config.yaml in the current directory.",
     )
+    sub.add_argument(
+        "--pipeline",
+        default="nexrad",
+        help="Pipeline whose modules' parameters are written (default: nexrad).",
+    )
+    sub.add_argument(
+        "--extensions",
+        default=None,
+        help="Comma-separated extension module import paths to include "
+        "(e.g. adapt.execution.nodes.cell_volume_stats).",
+    )
 
 
 def _config_cmd(args: argparse.Namespace) -> None:
     """Write a config.yaml template to the specified path."""
-    from datetime import datetime
+    from adapt.configuration.schemas.initialization import write_default_config
 
     try:
         cwd = Path.cwd()
@@ -342,10 +312,15 @@ def _config_cmd(args: argparse.Namespace) -> None:
             print("Aborted.")
             return
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    base_dir = str(out.parent.resolve())
-    out.write_text(_CONFIG_TEMPLATE.format(timestamp=timestamp, base_dir=base_dir))
+    pipeline = getattr(args, "pipeline", "nexrad")
+    if pipeline != "nexrad":
+        raise ValueError(f"Unknown pipeline '{pipeline}'. Only 'nexrad' is defined.")
+    extensions_arg = getattr(args, "extensions", None)
+    extensions = (
+        [p.strip() for p in extensions_arg.split(",") if p.strip()] if extensions_arg else None
+    )
+
+    write_default_config(out, extensions=extensions)
     print(f"Config written: {out}")
     print(f"Edit it, then run:  adapt run-nexrad {out} --radar KLOT")
 
@@ -371,7 +346,7 @@ def _dashboard_cmd(args: argparse.Namespace) -> None:
         os.getcwd()
     except FileNotFoundError:
         os.chdir(os.path.expanduser("~"))
-    from adapt.gui import main
+    from adapt.consumers.live import main
 
     main(repo=args.repo)
 

@@ -45,7 +45,7 @@ class StubModule(BaseModule):
 
 
 # Execution order tracker shared across test stubs
-_execution_order = []
+_execution_order: list[str] = []
 
 
 def _make_tracking_module(name, inputs, outputs):

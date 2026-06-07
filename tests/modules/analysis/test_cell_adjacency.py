@@ -1,4 +1,3 @@
-import dataclasses
 import tempfile
 from pathlib import Path
 
@@ -7,10 +6,10 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from adapt.configuration.schemas.materialization import materialize_module_configs
 from adapt.configuration.schemas.param import ParamConfig
 from adapt.configuration.schemas.resolve import resolve_config
 from adapt.configuration.schemas.user import UserConfig
+from adapt.execution.nodes.analysis import AnalysisModule
 from adapt.modules.analysis.module import RadarCellAnalyzer
 
 
@@ -23,7 +22,7 @@ def config():
         param = ParamConfig()
         user = UserConfig(base_dir=str(Path(d)), radar="TEST_RADAR")
         internal = resolve_config(param, user, None)
-        return materialize_module_configs(internal)["analysis_config"]
+        return AnalysisModule.build_config(internal)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -68,7 +67,7 @@ def test_extract_adjacency_simple_touch(config):
 
 def test_extract_adjacency_threshold_filters(config):
     # Override threshold to require >4 touches so pair is filtered out
-    cfg = dataclasses.replace(config, adjacency_min_touching=5)
+    cfg = config.model_copy(update={"adjacency_min_touching": 5})
     analyzer = RadarCellAnalyzer(cfg)
 
     labels = np.zeros((4, 4), dtype=np.int32)

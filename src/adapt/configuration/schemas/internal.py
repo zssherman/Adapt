@@ -10,7 +10,7 @@ All .get() calls, fallback defaults, and validation logic are FORBIDDEN in
 runtime code - everything is explicit here.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field
 
@@ -214,6 +214,14 @@ class InternalConfig(AdaptBaseModel):
 
     mode: Literal["realtime", "historical"]
     base_dir: str
+    source: str = Field(
+        default="aws_nexrad",
+        description="Name of the registered ingress source plugin that feeds the pipeline",
+    )
+    source_dir: str | None = Field(
+        default=None,
+        description="Directory a local source scans for already-present files",
+    )
     run_id: str | None = Field(
         default=None,
         description="Unique run identifier generated during initialization",
@@ -234,6 +242,13 @@ class InternalConfig(AdaptBaseModel):
     logging: InternalLoggingConfig
     processor: InternalProcessorConfig = Field(default_factory=InternalProcessorConfig)
     extensions: list[str] = Field(default_factory=list)
+    module_params: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Module selection. ``modules`` is the file allowlist (None = run all
+    # registered); ``only_modules`` / ``exclude_modules`` are the CLI --only / --not
+    # overrides. The processor resolves these into the final enabled set.
+    modules: list[str] | None = None
+    only_modules: list[str] | None = None
+    exclude_modules: list[str] | None = None
 
     model_config = ConfigDict(
         extra="forbid",
