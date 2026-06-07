@@ -3,10 +3,10 @@
 
 """Tests for RadarProcessor graph-based processing.
 
-The processor delegates scientific work to per-phase GraphExecutors built at startup,
-grouped by pipeline_phase: phase=1 (ingest + detection), phase=2 (projection + analysis
-+ tracking), phase=3 (post-persistence extensions, empty by default).
-These tests verify the orchestration layer: initialization, stop/start lifecycle.
+The processor delegates scientific work to per-required_history GraphExecutors built
+at startup: required_history=1 (ingest + detection), required_history=2 (projection +
+analysis + tracking). Post-persistence extensions use pipeline_phase=3 and a separate
+_post_executor. These tests verify the orchestration layer: initialization, lifecycle.
 """
 
 import queue

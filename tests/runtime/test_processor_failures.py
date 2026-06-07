@@ -1,8 +1,8 @@
 """Tests for RadarProcessor error handling and success paths.
 
-The processor orchestrates ingest+detection via _executors[1] and
-projection+analysis+tracking via _executors[2]. These tests patch the
-executors to keep the focus on orchestration rather than scientific behavior.
+The processor groups modules by required_history and runs each group when
+the rolling scan history has enough entries. These tests patch the executors
+to keep the focus on orchestration rather than scientific behavior.
 """
 
 import queue
@@ -52,8 +52,11 @@ def _fake_single_result(scan_time):
 def test_process_file_pipeline_exception_returns_false(
     monkeypatch, pipeline_config, pipeline_output_dirs, test_repository
 ):
-    """process_file returns False when single-frame executor raises."""
+    """process_file returns False when executor raises a non-contract exception."""
     proc = _make_proc(pipeline_config, pipeline_output_dirs, test_repository)
+
+    # Seed one entry in history so required_history=1 executor is eligible to run
+    proc._scan_history.append(_fake_single_result(datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)))
 
     def _boom(context):
         raise OSError("disk failure")

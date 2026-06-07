@@ -17,13 +17,14 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from adapt.modules.acquisition.module import AwsNexradDownloader
 from adapt.persistence import DataRepository
 from adapt.runtime.file_tracker import FileProcessingTracker
 from adapt.runtime.processor import RadarProcessor
+from adapt.runtime.sources import source_registry
 
 if TYPE_CHECKING:
     from adapt.configuration.schemas.internal import InternalConfig
+    from adapt.contracts.source import ScanSource
 
 __all__ = ["PipelineOrchestrator"]
 
@@ -123,7 +124,7 @@ class PipelineOrchestrator:
         self.output_dirs = {k: Path(v) for k, v in config.output_dirs.items()}
 
         # Threads (created in start())
-        self.downloader: AwsNexradDownloader | None = None
+        self.downloader: ScanSource | None = None
         self.processor: RadarProcessor | None = None
 
         # File tracking (initialized in _setup_logging)
@@ -186,6 +187,20 @@ class PipelineOrchestrator:
         tracker_path = tracker_dir / f"{radar}_processing_tracker.db"
         self.tracker = FileProcessingTracker(tracker_path)
         logger.debug("Processing tracker: %s", tracker_path)
+
+    def _create_source(self):
+        """Resolve and construct the ingress source named by ``config.source``.
+
+        Sources are swappable plugins (download, local directory, …) registered in
+        adapt.runtime.sources. All are constructed with the same signature.
+        """
+        source_cls = source_registry.get(self.config.source)
+        return source_cls(
+            config=self.config,
+            output_dirs=self.output_dirs,
+            result_queue=self.downloader_queue,
+            file_tracker=self.tracker,
+        )
 
     def start(self, max_runtime: int | None = None):
         """Start the pipeline and run until completion or user interrupt.
@@ -253,13 +268,8 @@ class PipelineOrchestrator:
             self.config.mode.upper(),
         )
 
-        # Start Downloader thread
-        self.downloader = AwsNexradDownloader(
-            config=self.config,
-            output_dirs=self.output_dirs,
-            result_queue=self.downloader_queue,
-            file_tracker=self.tracker,
-        )
+        # Start the ingress source (resolved by name from config)
+        self.downloader = self._create_source()
         self.downloader.start()
 
         # Start Processor thread
