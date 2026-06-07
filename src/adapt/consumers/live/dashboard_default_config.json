@@ -28,6 +28,11 @@
       "variables": ["radar_velocity_max", "radar_velocity_mean"],
       "styles": ["solid", "dashed"],
       "labels": ["Max vel (m/s)", "Mean vel (m/s)"]
+    },
+    "Cloud Top Height": {
+      "variables": ["cell_top_m", "cell_eth20_top_max"],
+      "styles": ["solid", "dashed"],
+      "labels": ["Echo top (m)", "20 dBZ top (m)"]
     }
   },
   "plot_assignments": ["Area", "Reflectivity", "ZDR"],

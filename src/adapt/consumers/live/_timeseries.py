@@ -97,9 +97,7 @@ def build_ts_title(group_name: str, group: dict) -> str:
     Example: "Area   ─ Cell area (km²)   -- Core area (km²)"
     """
     parts = [group_name]
-    for style, label in zip(
-        group.get("styles", []), group.get("labels", []), strict=False
-    ):
+    for style, label in zip(group.get("styles", []), group.get("labels", []), strict=False):
         char = _STYLE_CHAR.get(style, style)
         parts.append(f"{char} {label}")
     return "   ".join(parts)

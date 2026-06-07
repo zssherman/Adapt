@@ -30,6 +30,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,10 @@ _VAR_LABELS = {
     "spectrum_width": "Spec Width",
 }
 
+# Plot-group variables with these prefixes come from the cell_volume_stats
+# enrichment table — empty unless that opt-in module ran (see _volume_stats).
+_VOLUME_STATS_PREFIXES = ("cell_top", "cell_base", "cell_depth", "cell_volume", "cell_eth", "vol_")
+
 
 from adapt.consumers.live._config import (  # noqa: E402, I001
     _list_user_configs,
@@ -143,6 +148,10 @@ from adapt.consumers.live._config import (  # noqa: E402, I001
     _save_user_config,
 )
 from adapt.consumers.live._renderer import add_basemap as _add_basemap_fn  # noqa: E402
+from adapt.consumers.live._volume_stats import (  # noqa: E402
+    load_track_volume_stats as _load_track_volume_stats_fn,
+    merge_volume_stats as _merge_volume_stats_fn,
+)
 from adapt.consumers.live._timeseries import (  # noqa: E402
     apply_time_axis as _apply_time_axis_fn,
     build_ts_title as _build_ts_title_fn,
@@ -166,7 +175,7 @@ class AdaptDashboard(tk.Tk):
         self._repo_root = tk.StringVar(value=repo or "")
         self._radar = tk.StringVar(value="")
         self._run_sel = tk.StringVar(value="")
-        self._proc = None
+        self._proc: subprocess.Popen | None = None
         self._log_lines: list[str] = []
         self._today = datetime.now().strftime("%Y%m%d")
         self._last_n_plots = -1
@@ -191,7 +200,7 @@ class AdaptDashboard(tk.Tk):
         self._saved_zoom: tuple | None = None  # (xlim, ylim) preserved across redraws
 
         # Plot settings dialog reference (prevent duplicate windows)
-        self._plot_settings_win: object | None = None
+        self._plot_settings_win: tk.Toplevel | None = None
 
         # Pipeline subprocess — single reference for both toolbar and wizard launches
         self._log_file_handle: object | None = None  # open file handle for pipeline stdout
@@ -611,7 +620,7 @@ class AdaptDashboard(tk.Tk):
         for name in names:
             self._load_cfg_menu.add_command(
                 label=name,
-                command=lambda n=name: self._load_config(n),
+                command=lambda n=name: self._load_config(n),  # type: ignore[misc]
             )
 
     def _load_config(self, name: str) -> None:
@@ -996,7 +1005,7 @@ class AdaptDashboard(tk.Tk):
         for repo in self._recent_repos:
             self._recent_menu.add_command(
                 label=repo,
-                command=lambda r=repo: self._open_recent_repo(r),
+                command=lambda r=repo: self._open_recent_repo(r),  # type: ignore[misc]
             )
 
     def _open_recent_repo(self, path: str) -> None:
@@ -1339,7 +1348,7 @@ class AdaptDashboard(tk.Tk):
         win.resizable(False, False)
         win.grab_set()
 
-        pad = dict(padx=20, pady=6)
+        pad: dict[str, Any] = {"padx": 20, "pady": 6}
 
         ttk.Label(win, text="Welcome to Adapt Dashboard", font=("", 13, "bold")).pack(**pad)
         ttk.Label(
@@ -2128,7 +2137,7 @@ class AdaptDashboard(tk.Tk):
 
         for uid, slot in self._selected_cells.items():
             color = self._color_slots[slot % len(self._color_slots)]
-            artists: list = []
+            artists = []
 
             # Load full track history for path drawing
             history_df = None
@@ -2321,27 +2330,6 @@ class AdaptDashboard(tk.Tk):
         self._update_time_series_all()
         fig.canvas.draw_idle()
 
-    def _draw_tracking_history(self, ax, history_df: pd.DataFrame | None = None) -> None:
-        df = history_df if history_df is not None else self._current_cell_df
-        if df is None:
-            return
-        if "cell_centroid_mass_x" not in df.columns:
-            return
-        track_df = df.dropna(subset=["cell_centroid_mass_x", "cell_centroid_mass_y"]).sort_values(
-            "scan_time"
-        )
-        if track_df.empty:
-            return
-        ds = self._current_nc_ds
-        if ds is None:
-            return
-        x_km, y_km = _centroid_track_to_km(track_df, ds["x"].values, ds["y"].values)
-        (line,) = ax.plot(x_km, y_km, "-", color="cyan", linewidth=1.5, alpha=0.85, zorder=10)
-        dots = ax.scatter(x_km, y_km, s=18, color="cyan", zorder=11, alpha=0.9)
-        cx, cy = float(x_km[-1]), float(y_km[-1])
-        star = ax.scatter([cx], [cy], s=60, color="#8aff9c", marker="*", zorder=12)
-        self._track_overlay = [line, dots, star]
-
     def _clear_tracking_history(self) -> None:
         for artists in self._track_overlay.values():
             for artist in artists:
@@ -2402,6 +2390,13 @@ class AdaptDashboard(tk.Tk):
         group_names = self._cfg.get("plot_assignments", ["Area", "Reflectivity", "ZDR"])
         axes = [ax1, ax2, ax3]
 
+        # Variables referenced by the selected groups — used to decide whether the
+        # cell_volume_stats table must be joined onto each track's history.
+        needed_vars: set[str] = set()
+        for gname in group_names:
+            grp = self._cfg.get("plot_groups", {}).get(gname, {})
+            needed_vars.update(grp.get("variables", []))
+
         repo = self._repo_root.get().strip()
         radar = self._radar.get().strip().upper()
         db_path = Path(repo) / radar / "catalog.db"
@@ -2430,6 +2425,11 @@ class AdaptDashboard(tk.Tk):
                 continue
 
             track_df = history_df.sort_values("scan_time")
+            # Join 3D volume stats (e.g. cloud-top height) only when a selected
+            # group needs columns that cells_by_scan does not carry.
+            if needed_vars - set(track_df.columns) and self._current_run_id:
+                vol_df = _load_track_volume_stats_fn(db_path, self._current_run_id, uid)
+                track_df = _merge_volume_stats_fn(track_df, vol_df)
             t = pd.to_datetime(track_df["scan_time"], utc=True)
 
             for ax, group_name in zip(axes, group_names, strict=False):
@@ -2455,6 +2455,20 @@ class AdaptDashboard(tk.Tk):
             group = self._cfg.get("plot_groups", {}).get(group_name, {})
             rich_title = _build_ts_title_fn(group_name, group)
             self._style_ts_ax(ax, "", rich_title)
+            if not ax.get_lines():
+                needs_vol = any(
+                    v.startswith(_VOLUME_STATS_PREFIXES) for v in group.get("variables", [])
+                )
+                ax.text(
+                    0.5,
+                    0.5,
+                    "no data — enable cell_volume_stats" if needs_vol else "no data",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    color="#888",
+                    fontsize=7,
+                )
 
         self._apply_time_axis(axes[-1], axes)
         _draw_scan_marker_fn(tuple(axes), cur_t)
@@ -2757,7 +2771,8 @@ class AdaptDashboard(tk.Tk):
                     rows = (
                         ts_obj._connect()
                         .execute(
-                            "SELECT * FROM cells_by_scan WHERE run_id=? ORDER BY scan_time, cell_uid",
+                            "SELECT * FROM cells_by_scan WHERE run_id=? "
+                            "ORDER BY scan_time, cell_uid",
                             (self._current_run_id,),
                         )
                         .fetchall()

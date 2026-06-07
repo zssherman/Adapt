@@ -11,8 +11,4 @@ Available consumers
 -------------------
 adapt.consumers.live
     Operational scan viewer (Tkinter dashboard).
-adapt.consumers.console
-    Scientific analysis workbench (PySide6).
-adapt.consumers.analysis
-    Pure computation layer: lifecycle, population, derived variables.
 """

@@ -93,10 +93,10 @@ if _HAS_MPL:
                 return ""
             # "KOUN  Reflectivity [2026-06-04 14:23:00 UTC]"
             # → "KOUN_Reflectivity_2026-06-04_14-23-00_UTC"
-            safe = re.sub(r"[\[\]]", "", raw)          # remove brackets
-            safe = re.sub(r"\s+", "_", safe.strip())   # spaces → underscores
-            safe = re.sub(r"[:/\\|?*\"<>]", "-", safe) # illegal path chars → dash
-            safe = re.sub(r"_+", "_", safe)             # collapse multiple underscores
+            safe = re.sub(r"[\[\]]", "", raw)  # remove brackets
+            safe = re.sub(r"\s+", "_", safe.strip())  # spaces → underscores
+            safe = re.sub(r"[:/\\|?*\"<>]", "-", safe)  # illegal path chars → dash
+            safe = re.sub(r"_+", "_", safe)  # collapse multiple underscores
             return safe.strip("_")
 
     _CompactToolbar = _CompactToolbarCls
