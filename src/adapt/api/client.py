@@ -32,9 +32,11 @@ import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import duckdb
+if TYPE_CHECKING:
+    import duckdb
+
 import pandas as pd
 import xarray as xr
 
@@ -88,8 +90,10 @@ class RepositoryClient:
         catalog = self._catalog(radar)
         return TrackStore(catalog.db_path)
 
-    def _duckdb(self) -> duckdb.DuckDBPyConnection:
+    def _duckdb(self):
         if self._duckdb_conn is None:
+            import duckdb
+
             self._duckdb_conn = duckdb.connect(":memory:")
         return self._duckdb_conn
 
