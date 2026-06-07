@@ -11,3 +11,4 @@ pipeline:
     - adapt.execution.nodes.projection
     - adapt.execution.nodes.analysis
     - adapt.execution.nodes.tracking
+    - adapt.execution.nodes.cell_volume_stats

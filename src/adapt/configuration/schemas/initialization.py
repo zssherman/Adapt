@@ -33,6 +33,59 @@ _RUN_ID_PATTERN = re.compile(
 )
 
 
+def _split_csv(value: str | None) -> list[str] | None:
+    """Parse a comma-separated CLI value into a list, or None if unset/empty."""
+    if not value:
+        return None
+    items = [p.strip() for p in value.split(",") if p.strip()]
+    return items or None
+
+
+_CONFIG_HEADER = """\
+# Adapt Pipeline Configuration — full generated config
+# Generated: {timestamp}
+#
+# Every parameter of every module in the pipeline is listed below, set to its
+# default. Edit any value to override the default for this run; delete what you
+# don't need (omitted keys keep their defaults). CLI flags (e.g. --radar, --mode)
+# take precedence over this file.
+#
+# Set the radar under `downloader: {{ radar: KLOT }}` (or pass --radar), then run:
+#   adapt run-nexrad config.yaml --radar KLOT
+"""
+
+
+def write_default_config(path: Path, extensions: list[str] | None = None) -> None:
+    """Write a full default config.yaml to ``path``.
+
+    The config is assembled dynamically from the registered pipeline modules:
+    ParamConfig defaults (core/global sections) plus every extension module's
+    own params under ``module_params``. Public — called by both
+    ``init_runtime_config`` (auto-bootstrap) and ``adapt config``.
+    """
+    from datetime import datetime as _dt
+
+    from adapt.configuration.schemas import yaml_writer
+    from adapt.configuration.schemas.assemble import (
+        assemble_default_config,
+        assemble_descriptions,
+    )
+
+    data = assemble_default_config(extensions)
+    # Default the output directory to the config's own folder so `adapt run-nexrad
+    # config.yaml` works without --base-dir; the user can edit or override it.
+    data = {"base_dir": str(path.parent.resolve()), **data}
+    descriptions = assemble_descriptions(extensions)
+    header = _CONFIG_HEADER.format(timestamp=_dt.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml_writer.dump(data, descriptions, header=header))
+
+
+# Internal alias used within this module
+_write_default_config = write_default_config
+
+
 def _load_user_config_dict(config_path: str) -> dict:
     """Load user config dict from a Python (.py) or YAML (.yaml/.yml) file."""
     path = Path(config_path)
@@ -251,6 +304,21 @@ def init_runtime_config(args) -> InternalConfig:
 
     # 1. Load and resolve configuration from all sources
     config_path = getattr(args, "config", None)
+    base_dir_arg = getattr(args, "base_dir", None)
+
+    # When no --base-dir and no config file are provided, default to CWD.
+    # If config.yaml exists there, load it; if not, write a default one.
+    if not base_dir_arg and not config_path:
+        cwd = Path.cwd()
+        cwd_config = cwd / "config.yaml"
+        if cwd_config.exists():
+            config_path = str(cwd_config)
+        else:
+            _write_default_config(cwd_config)
+            print(f"[adapt] No config found — wrote defaults to {cwd_config}")
+        if not base_dir_arg:
+            # Inject CWD as base_dir so the CLI args dict picks it up below
+            args = type(args)(**{**vars(args), "base_dir": str(cwd)})
 
     # Load components
     param_cfg = ParamConfig()
@@ -271,6 +339,8 @@ def init_runtime_config(args) -> InternalConfig:
             "base_dir": getattr(args, "base_dir", None),
             "log_level": "DEBUG" if getattr(args, "verbose", False) else None,
             "run_id": getattr(args, "run_id", None),
+            "only_modules": _split_csv(getattr(args, "only_modules", None)),
+            "exclude_modules": _split_csv(getattr(args, "exclude_modules", None)),
         }.items()
         if v is not None
     }

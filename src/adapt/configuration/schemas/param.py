@@ -278,6 +278,8 @@ class ParamConfig(AdaptBaseModel):
     """
 
     mode: Literal["realtime", "historical"] = "realtime"
+    source: str = "aws_nexrad"
+    source_dir: str | None = None
     reader: ReaderConfig = Field(default_factory=ReaderConfig)  # type: ignore[arg-type]
     downloader: DownloaderConfig = Field(default_factory=DownloaderConfig)  # type: ignore[arg-type]
     regridder: RegridderConfig = Field(default_factory=RegridderConfig)  # type: ignore[arg-type]

@@ -17,8 +17,27 @@ from pydantic import Field, field_validator, model_validator
 
 from adapt.configuration.schemas.base import AdaptBaseModel
 
+# InternalConfig sections that have no explicit UserConfig field and are routed
+# straight through from undeclared (extra) input. Other sections (downloader,
+# regridder, segmenter, global, analyzer, projector) are handled via typed fields.
+_PASSTHROUGH_SECTIONS = frozenset(
+    {"reader", "tracker", "visualization", "output", "logging", "processor"}
+)
 
-class UserSegmenterConfig(AdaptBaseModel):
+
+class _UserSection(AdaptBaseModel):
+    """Base for typed nested user sections.
+
+    Tolerates every field a fully-generated config.yaml emits (extra="allow") and
+    passes the extras through model_dump so they reach InternalConfig, which makes
+    the final validation decision.
+    """
+
+    model_config = AdaptBaseModel.model_config.copy()
+    model_config.update({"extra": "allow", "populate_by_name": True})
+
+
+class UserSegmenterConfig(_UserSection):
     """User-facing segmentation config with aliases."""
 
     method: str | None = None
@@ -46,7 +65,7 @@ class UserSegmenterConfig(AdaptBaseModel):
         return v
 
 
-class UserGlobalConfig(AdaptBaseModel):
+class UserGlobalConfig(_UserSection):
     """User-facing global config."""
 
     z_level: float | None = None
@@ -62,7 +81,7 @@ class UserGlobalConfig(AdaptBaseModel):
         return v
 
 
-class UserProjectorConfig(AdaptBaseModel):
+class UserProjectorConfig(_UserSection):
     """User-facing projector config."""
 
     method: str | None = None
@@ -82,7 +101,7 @@ class UserProjectorConfig(AdaptBaseModel):
         return v
 
 
-class UserRegridderConfig(AdaptBaseModel):
+class UserRegridderConfig(_UserSection):
     """User-facing regridder config."""
 
     grid_shape: tuple[int, int, int] | None = None
@@ -93,7 +112,7 @@ class UserRegridderConfig(AdaptBaseModel):
     save_netcdf: bool | None = None
 
 
-class UserDownloaderConfig(AdaptBaseModel):
+class UserDownloaderConfig(_UserSection):
     """User-facing downloader config."""
 
     radar: str | None = None
@@ -105,7 +124,7 @@ class UserDownloaderConfig(AdaptBaseModel):
     end_time: str | None = None
 
 
-class UserAnalyzerConfig(AdaptBaseModel):
+class UserAnalyzerConfig(_UserSection):
     """User-facing analyzer config."""
 
     radar_variables: list[str] | None = None
@@ -135,6 +154,8 @@ class UserConfig(AdaptBaseModel):
 
     # Top-level operational settings
     mode: Literal["realtime", "historical"] | None = Field(None, alias="MODE")
+    source: str | None = None
+    source_dir: str | None = None
     radar: str | None = Field(None, alias="RADAR_ID")
     base_dir: str | None = Field(None, alias="BASE_DIR")
 
@@ -172,6 +193,13 @@ class UserConfig(AdaptBaseModel):
     # Extension modules (optional, user-selected)
     extensions: list[str] = Field(default_factory=list)
 
+    # Pipeline module allowlist (node names). None/absent = run all registered
+    # modules; a present list runs only the named ones (comment a line out to skip).
+    modules: list[str] | None = None
+
+    # Per-module config params, keyed by module name (for extension modules)
+    module_params: dict[str, dict[str, Any]] | None = None
+
     # Nested overrides (advanced users)
     downloader: UserDownloaderConfig | None = None
     regridder: UserRegridderConfig | None = None
@@ -181,8 +209,11 @@ class UserConfig(AdaptBaseModel):
     analyzer: UserAnalyzerConfig | None = None
 
     model_config = AdaptBaseModel.model_config.copy()
-    # Allow forgiving input dictionaries (ignore unknown legacy keys)
-    model_config.update({"populate_by_name": True, "extra": "ignore"})
+    # Capture undeclared sections (extra="allow") so the full set of InternalConfig
+    # sections can be overridden; unrouted legacy keys are filtered in
+    # to_internal_overrides. Unknown keys *within* a routed section still raise
+    # via InternalConfig (extra="forbid").
+    model_config.update({"populate_by_name": True, "extra": "allow"})
 
     @model_validator(mode="after")
     def infer_historical_mode_from_times(self):
@@ -228,8 +259,20 @@ class UserConfig(AdaptBaseModel):
         if self.mode is not None:
             overrides["mode"] = self.mode
 
+        if self.source is not None:
+            overrides["source"] = self.source
+
+        if self.source_dir is not None:
+            overrides["source_dir"] = self.source_dir
+
         if self.extensions:
             overrides["extensions"] = self.extensions
+
+        if self.modules is not None:
+            overrides["modules"] = self.modules
+
+        if self.module_params:
+            overrides["module_params"] = self.module_params
 
         if self.base_dir is not None:
             overrides["base_dir"] = str(self.base_dir)
@@ -337,5 +380,12 @@ class UserConfig(AdaptBaseModel):
 
         if analyzer:
             overrides["analyzer"] = analyzer
+
+        # Pass through whole sections that have no typed UserConfig field (tracker,
+        # visualization, output, logging, processor, reader). They are deep-merged
+        # onto ParamConfig by resolve_config; unknown sub-keys raise at InternalConfig.
+        for key, value in (self.model_extra or {}).items():
+            if key in _PASSTHROUGH_SECTIONS and isinstance(value, dict):
+                overrides[key] = value
 
         return overrides

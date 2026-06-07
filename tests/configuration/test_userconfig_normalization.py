@@ -17,10 +17,12 @@ def test_uppercase_keys_are_handled():
     assert user.base_dir == "/tmp/adapt_out"
 
 
-def test_unknown_keys_are_ignored():
+def test_unknown_keys_do_not_reach_overrides():
+    # Undeclared keys are captured (extra="allow") so real InternalConfig sections
+    # can pass through, but a legacy/unknown key that is not a routed section must
+    # never reach the resolved overrides.
     raw = {"MODE": "realtime", "UNKNOWN_LEGACY": 12345}
     user = UserConfig.model_validate(raw)
 
     assert user.mode == "realtime"
-    # Unknown key should not become an attribute nor raise
-    assert not hasattr(user, "UNKNOWN_LEGACY")
+    assert "UNKNOWN_LEGACY" not in user.to_internal_overrides()
