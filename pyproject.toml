@@ -69,9 +69,6 @@ maps = [
     "contextily",
     "pyproj",
 ]
-console = [
-    "PySide6>=6.6",
-]
 
 [tool.setuptools]
 include-package-data = true
