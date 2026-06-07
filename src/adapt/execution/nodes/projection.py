@@ -1,9 +1,10 @@
 # Copyright © 2026, UChicago Argonne, LLC
 # See LICENSE for terms and disclaimer.
 
-from adapt.contracts import check_projected_ds, check_segmented_ds
+from adapt.contracts import check_projected_ds, check_scan_history, check_segmented_ds
 from adapt.execution.module_registry import registry
 from adapt.modules.base import BaseModule
+from adapt.modules.projection.config import ProjectionConfig
 from adapt.modules.projection.module import RadarCellProjector
 
 
@@ -11,17 +12,18 @@ class ProjectionModule(BaseModule):
     """BaseModule wrapper for RadarCellProjector.
 
     Computes optical flow between consecutive radar frames and projects
-    cell positions forward in time. Stateless: receives the frame pair
-    via the context key ``dataset_history`` (injected by the processor).
+    cell positions forward in time. Receives the scan pair via
+    ``scan_history`` (list of prior scan context dicts).
 
     Context inputs
     --------------
     segmented_ds : xr.Dataset
         2D segmented dataset for the current frame (output of DetectModule).
-    dataset_history : list of (str, xr.Dataset)
-        Rolling history of (filepath, segmented_ds) tuples supplied by the
-        processor. Must contain exactly 2 entries before this module is called.
-    config : InternalConfig
+    scan_history : list[dict]
+        Rolling history of scan context dicts supplied by the processor.
+        Each dict must contain ``segmented_ds`` and ``scan_time``.
+        Requires at least 2 entries (required_history=2).
+    projection_config : ProjectionModuleConfig
         Runtime configuration.
 
     Context outputs
@@ -31,29 +33,45 @@ class ProjectionModule(BaseModule):
     """
 
     name = "projection"
-    pipeline_phase = 2
-    inputs = ["segmented_ds", "dataset_history", "projection_config"]
+    summary = "optical-flow projection between scans"
+    required_history = 2
+    pipeline_phase = 0
+    inputs = ["segmented_ds", "scan_history", "projection_config"]
     outputs = ["projected_ds"]
-    input_contracts = {"segmented_ds": check_segmented_ds}
+    input_contracts = {"segmented_ds": check_segmented_ds, "scan_history": check_scan_history}
     output_contracts = {"projected_ds": check_projected_ds}
+    config_class = ProjectionConfig
+
+    @classmethod
+    def build_config(cls, cfg) -> ProjectionConfig:
+        return ProjectionConfig(
+            method=cfg.projector.method,
+            nan_fill_value=cfg.projector.nan_fill_value,
+            max_time_interval_minutes=cfg.projector.max_time_interval_minutes,
+            max_projection_steps=cfg.projector.max_projection_steps,
+            pyr_scale=cfg.projector.flow_params.pyr_scale,
+            levels=cfg.projector.flow_params.levels,
+            winsize=cfg.projector.flow_params.winsize,
+            iterations=cfg.projector.flow_params.iterations,
+            poly_n=cfg.projector.flow_params.poly_n,
+            poly_sigma=cfg.projector.flow_params.poly_sigma,
+            flags=cfg.projector.flow_params.flags,
+            min_motion_threshold=cfg.projector.min_motion_threshold,
+            max_flow_magnitude=cfg.projector.max_flow_magnitude,
+            reflectivity_var=cfg.global_.var_names.reflectivity,
+        )
 
     def __init__(self) -> None:
         self._projector: RadarCellProjector | None = None
 
     def run(self, context: dict) -> dict:
         config = context["projection_config"]
-        dataset_history = context["dataset_history"]  # list of (filepath, ds_2d)
+        scan_history = context["scan_history"]  # list of scan context dicts
 
         if self._projector is None:
             self._projector = RadarCellProjector(config)
 
-        if len(dataset_history) < 2:
-            raise ValueError(
-                f"ProjectionModule requires 2 frames in dataset_history, "
-                f"got {len(dataset_history)}. Processor must pair frames before calling."
-            )
-
-        ds_list = [ds for _, ds in dataset_history]
+        ds_list = [ctx["segmented_ds"] for ctx in scan_history]
         projected = self._projector.project(ds_list)
         return {"projected_ds": projected}
 

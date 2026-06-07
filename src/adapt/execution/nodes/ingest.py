@@ -11,6 +11,7 @@ import xarray as _xr
 from adapt.contracts import check_grid_ds_2d
 from adapt.execution.module_registry import registry
 from adapt.modules.base import BaseModule
+from adapt.modules.ingest.config import IngestConfig
 from adapt.modules.ingest.module import RadarDataLoader
 
 
@@ -40,10 +41,29 @@ class LoadModule(BaseModule):
     """
 
     name = "ingest"
-    pipeline_phase = 1
+    summary = "download + read + regrid radar volumes"
+    required_history = 1
+    pipeline_phase = 0
     inputs = ["nexrad_file", "ingest_config"]
-    outputs = ["grid_ds", "grid_ds_2d", "scan_time"]
+    outputs = ["grid_ds", "grid_ds_2d", "scan_time", "grid_nc_path"]
     output_contracts = {"grid_ds_2d": check_grid_ds_2d}
+    config_class = IngestConfig
+
+    @classmethod
+    def build_config(cls, cfg) -> IngestConfig:
+        return IngestConfig(
+            file_format=cfg.reader.file_format,
+            grid_shape=cfg.regridder.grid_shape,
+            grid_limits=cfg.regridder.grid_limits,
+            roi_func=cfg.regridder.roi_func,
+            min_radius=cfg.regridder.min_radius,
+            weighting_function=cfg.regridder.weighting_function,
+            save_netcdf=cfg.regridder.save_netcdf,
+            radar=cfg.downloader.radar,
+            z_level=cfg.global_.z_level,
+            z_coord=cfg.global_.coord_names.z,
+            time_coord=cfg.global_.coord_names.time,
+        )
 
     def __init__(self) -> None:
         self._loader: RadarDataLoader | None = None
@@ -97,7 +117,16 @@ class LoadModule(BaseModule):
                 ds_2d = ds_2d.assign_coords({coord: ds[coord]})
         ds_2d.attrs.update(ds.attrs)
 
-        return {"grid_ds": ds, "grid_ds_2d": ds_2d, "scan_time": scan_time}
+        # The loader wrote the 3D grid to `{output_dir}/{stem}.nc` when save_netcdf.
+        # Return that path so the processor can register it as a gridded3d artifact.
+        grid_nc_path = f"{nc_path}.nc" if (config.save_netcdf and nc_path) else None
+
+        return {
+            "grid_ds": ds,
+            "grid_ds_2d": ds_2d,
+            "scan_time": scan_time,
+            "grid_nc_path": grid_nc_path,
+        }
 
 
 registry.register(LoadModule)

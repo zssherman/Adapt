@@ -74,6 +74,61 @@ def _ensure_modules_registered(extensions: list[str] | None = None) -> None:
             raise ImportError(f"Failed to load extension module '{path}': {e}") from e
 
 
+def resolve_enabled_modules(
+    all_modules: list,
+    modules: list[str] | None = None,
+    only: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> list:
+    """Filter ``all_modules`` to the enabled set, preserving order.
+
+    Precedence (CLI over file): start from every module; if ``modules`` (the config
+    allowlist) is given, restrict to it; then ``only`` restricts further (exact set)
+    or ``exclude`` subtracts. Every referenced name must be a real module. After
+    filtering, validates that no enabled module needs an input produced solely by a
+    disabled module — raising a clear error rather than failing opaquely at runtime.
+
+    Parameters
+    ----------
+    all_modules : list
+        All registered module instances (each with ``name``/``inputs``/``outputs``).
+    modules, only, exclude : list[str], optional
+        Config allowlist, ``--only`` set, and ``--not`` set respectively.
+    """
+    by_name = {m.name: m for m in all_modules}
+    for label, names in (("modules", modules), ("--only", only), ("--not", exclude)):
+        for n in names or []:
+            if n not in by_name:
+                raise ValueError(
+                    f"Unknown module '{n}' in {label}. Available: {', '.join(by_name)}"
+                )
+
+    enabled = set(by_name)
+    if modules is not None:
+        enabled = set(modules)
+    if only:
+        enabled = set(only)
+    elif exclude:
+        enabled -= set(exclude)
+
+    producer: dict[str, str] = {}
+    for m in all_modules:
+        for out in m.outputs:
+            producer[out] = m.name
+    for m in all_modules:
+        if m.name not in enabled:
+            continue
+        for inp in m.inputs:
+            src = producer.get(inp)
+            if src is not None and src not in enabled:
+                raise ValueError(
+                    f"Module '{m.name}' needs input '{inp}' produced by disabled "
+                    f"module '{src}'. Enable '{src}' or also disable '{m.name}'."
+                )
+
+    return [m for m in all_modules if m.name in enabled]
+
+
 class NexradPipeline:
     """Graph-based NEXRAD processing pipeline.
 

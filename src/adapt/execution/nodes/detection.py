@@ -4,6 +4,7 @@
 from adapt.contracts import check_grid_ds_2d, check_segmented_ds
 from adapt.execution.module_registry import registry
 from adapt.modules.base import BaseModule
+from adapt.modules.detection.config import DetectionConfig
 from adapt.modules.detection.module import RadarCellSegmenter
 
 
@@ -29,11 +30,29 @@ class DetectModule(BaseModule):
     """
 
     name = "detection"
-    pipeline_phase = 1
+    summary = "segment cells from the grid"
+    required_history = 1
+    pipeline_phase = 0
     inputs = ["grid_ds_2d", "detection_config"]
     outputs = ["segmented_ds", "num_cells"]
     input_contracts = {"grid_ds_2d": check_grid_ds_2d}
     output_contracts = {"segmented_ds": check_segmented_ds}
+    config_class = DetectionConfig
+
+    @classmethod
+    def build_config(cls, cfg) -> DetectionConfig:
+        return DetectionConfig(
+            method=cfg.segmenter.method,
+            threshold=cfg.segmenter.threshold,
+            closing_kernel=cfg.segmenter.closing_kernel,
+            filter_by_size=cfg.segmenter.filter_by_size,
+            min_cellsize_gridpoint=cfg.segmenter.min_cellsize_gridpoint,
+            max_cellsize_gridpoint=cfg.segmenter.max_cellsize_gridpoint,
+            h_maxima=cfg.segmenter.h_maxima,
+            reflectivity_var=cfg.global_.var_names.reflectivity,
+            labels_var=cfg.global_.var_names.cell_labels,
+            z_level=cfg.global_.z_level,
+        )
 
     def __init__(self) -> None:
         self._segmenter: RadarCellSegmenter | None = None
